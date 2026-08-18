@@ -1,0 +1,14 @@
+services:
+  sitewatch-agent:
+    build: .
+    container_name: sitewatch-agent
+    restart: unless-stopped
+    environment:
+      SITEWATCH_SERVER_URL: ${SITEWATCH_SERVER_URL}
+      SITEWATCH_AGENT_TOKEN: ${SITEWATCH_AGENT_TOKEN}
+      SITEWATCH_DB: /data/queue.db
+    volumes:
+      - sitewatch_data:/data
+
+volumes:
+  sitewatch_data:
