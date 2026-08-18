@@ -27,12 +27,54 @@ function Require-Admin {
         exit
     }
 }
+function Test-PythonCandidate($command, $args) {
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $command
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $psi.Arguments = (($args + @('--version')) -join ' ')
+        $p = New-Object System.Diagnostics.Process
+        $p.StartInfo = $psi
+        [void]$p.Start()
+        if (-not $p.WaitForExit(10000)) { try { $p.Kill() } catch {}; return $false }
+        $output = (($p.StandardOutput.ReadToEnd()) + ' ' + ($p.StandardError.ReadToEnd())).Trim()
+        return ($p.ExitCode -eq 0 -and $output -match 'Python\s+3\.')
+    } catch {
+        return $false
+    }
+}
 function Find-Python {
-    foreach ($cmd in @('python','py')) {
-        $c = Get-Command $cmd -ErrorAction SilentlyContinue
-        if ($c) {
-            if ($cmd -eq 'py') { return @{ Command=$c.Source; Args=@('-3') } }
-            return @{ Command=$c.Source; Args=@() }
+    # Prefer the real Python launcher because the Windows Store python.exe alias
+    # can exist even when Python itself is not installed.
+    $py = Get-Command py.exe -ErrorAction SilentlyContinue
+    if ($py -and (Test-PythonCandidate $py.Source @('-3'))) {
+        return @{ Command=$py.Source; Args=@('-3') }
+    }
+
+    $python = Get-Command python.exe -ErrorAction SilentlyContinue
+    if ($python -and (Test-PythonCandidate $python.Source @())) {
+        return @{ Command=$python.Source; Args=@() }
+    }
+
+    $searchRoots = @(
+        "$env:LOCALAPPDATA\Programs\Python",
+        "$env:ProgramFiles\Python313",
+        "$env:ProgramFiles\Python312",
+        "$env:ProgramFiles\Python311",
+        "$env:ProgramFiles\Python310"
+    )
+    foreach ($root in $searchRoots) {
+        if (-not $root -or -not (Test-Path $root)) { continue }
+        $candidates = @()
+        if (Test-Path (Join-Path $root 'python.exe')) { $candidates += Get-Item (Join-Path $root 'python.exe') }
+        $candidates += Get-ChildItem $root -Filter python.exe -Recurse -ErrorAction SilentlyContinue
+        foreach ($candidate in ($candidates | Sort-Object FullName -Descending -Unique)) {
+            if (Test-PythonCandidate $candidate.FullName @()) {
+                return @{ Command=$candidate.FullName; Args=@() }
+            }
         }
     }
     return $null
@@ -43,19 +85,22 @@ Require-Admin
 Write-Step "Checking Python"
 $pythonInfo = Find-Python
 if (-not $pythonInfo) {
-    $winget = Get-Command winget -ErrorAction SilentlyContinue
-    if (-not $winget) { throw "Python 3 is not installed and winget is unavailable. Install Python 3.11+ and rerun this installer." }
-    Write-Host "Python not found. Installing Python 3..." -ForegroundColor Yellow
-    & winget install --id Python.Python.3.13 -e --accept-package-agreements --accept-source-agreements --silent
+    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+    if (-not $winget) { throw "A working Python 3 installation was not found and winget is unavailable. Install Python 3.11+ from python.org and rerun this installer." }
+    Write-Host "Working Python not found. Installing Python 3.13..." -ForegroundColor Yellow
+    & $winget.Source install --id Python.Python.3.13 -e --scope machine --accept-package-agreements --accept-source-agreements --silent
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Machine-wide Python install returned exit code $LASTEXITCODE. Trying user scope."
+        & $winget.Source install --id Python.Python.3.13 -e --accept-package-agreements --accept-source-agreements --silent
+    }
     $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
+    Start-Sleep -Seconds 2
     $pythonInfo = Find-Python
     if (-not $pythonInfo) {
-        $candidate = Get-ChildItem "$env:LOCALAPPDATA\Programs\Python" -Filter python.exe -Recurse -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
-        if ($candidate) { $pythonInfo = @{ Command=$candidate.FullName; Args=@() } }
+        throw "Python installation was requested, but a working Python 3 interpreter still could not be found. Disable the Microsoft Store python App Execution Alias or install Python 3.11+ from python.org, then rerun the installer."
     }
-    if (-not $pythonInfo) { throw "Python installation completed but python.exe could not be located. Reopen PowerShell and rerun the installer." }
 }
-Write-Host "Python: $($pythonInfo.Command)"
+Write-Host "Python: $($pythonInfo.Command) $($pythonInfo.Args -join ' ')"
 
 Write-Step "Refreshing SiteWatcher client files"
 $tempRoot = Join-Path $env:TEMP ("sitewatch-native-" + [guid]::NewGuid().ToString('N'))
@@ -80,22 +125,30 @@ if ($envBackup) { Set-Content -Path $existingEnv -Value $envBackup -Encoding utf
 Remove-Item $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Step "Creating Python environment"
-$venvPython = Join-Path $InstallPath ".venv\Scripts\python.exe"
-if (-not (Test-Path $venvPython)) { & $pythonInfo.Command @($pythonInfo.Args) -m venv (Join-Path $InstallPath '.venv') }
+$venvPath = Join-Path $InstallPath '.venv'
+$venvPython = Join-Path $venvPath "Scripts\python.exe"
+if (-not (Test-Path $venvPython)) {
+    & $pythonInfo.Command @($pythonInfo.Args) -m venv $venvPath
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $venvPython)) {
+        throw "Python was found, but creation of the SiteWatcher virtual environment failed. Interpreter: $($pythonInfo.Command)"
+    }
+}
 & $venvPython -m pip install --upgrade pip
+if ($LASTEXITCODE -ne 0) { throw "Unable to upgrade pip in the SiteWatcher Python environment." }
 & $venvPython -m pip install -r (Join-Path $InstallPath 'requirements.txt')
+if ($LASTEXITCODE -ne 0) { throw "Unable to install SiteWatcher Python dependencies." }
 
 Write-Step "Checking FFmpeg / FFprobe"
-$ffmpeg = Get-Command ffmpeg -ErrorAction SilentlyContinue
-$ffprobe = Get-Command ffprobe -ErrorAction SilentlyContinue
+$ffmpeg = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
+$ffprobe = Get-Command ffprobe.exe -ErrorAction SilentlyContinue
 if (-not $ffmpeg -or -not $ffprobe) {
-    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
     if ($winget) {
         Write-Host "FFmpeg not found. Installing FFmpeg for RTSP monitoring..." -ForegroundColor Yellow
-        & winget install --id Gyan.FFmpeg -e --accept-package-agreements --accept-source-agreements --silent
+        & $winget.Source install --id Gyan.FFmpeg -e --accept-package-agreements --accept-source-agreements --silent
         $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
-        $ffmpeg = Get-Command ffmpeg -ErrorAction SilentlyContinue
-        $ffprobe = Get-Command ffprobe -ErrorAction SilentlyContinue
+        $ffmpeg = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
+        $ffprobe = Get-Command ffprobe.exe -ErrorAction SilentlyContinue
     }
 }
 if ($ffmpeg -and $ffprobe) {
