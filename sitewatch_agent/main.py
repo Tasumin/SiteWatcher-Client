@@ -129,9 +129,10 @@ def preview_loop():
 
 def run_discovery(reason="scheduled"):
     global last_discovery_request
-    network, devices, elapsed = scan_network()
-    print(f"[discovery] {reason}: scanned {network} in {elapsed:.1f}s; found {len(devices)} candidates", flush=True)
-    r = api("POST", "/api/agent/discovery", json={"devices": devices, "network": str(network), "version": __version__})
+    networks, devices, elapsed = scan_network()
+    network_text = ", ".join(str(n) for n in networks)
+    print(f"[discovery] {reason}: scanned {network_text} in {elapsed:.1f}s; found {len(devices)} candidates", flush=True)
+    r = api("POST", "/api/agent/discovery", json={"devices": devices, "network": network_text, "networks": [str(n) for n in networks], "version": __version__})
     if not r.ok:
         print(f"[discovery] server HTTP {r.status_code}: {r.text[:300]}", flush=True); return False
     print(f"[discovery] reported {r.json().get('accepted', 0)} candidates", flush=True)
