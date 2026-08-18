@@ -10,6 +10,10 @@ $RepoZip = "https://github.com/Tasumin/SiteWatcher-Client/archive/refs/heads/mai
 $TaskName = "SiteWatcher Agent"
 
 function Write-Step($text) { Write-Host "`n==> $text" -ForegroundColor Cyan }
+function Get-OrDefault($table, $key, $default) {
+    if ($table.ContainsKey($key) -and $table[$key]) { return $table[$key] }
+    return $default
+}
 function Require-Admin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
     $p = New-Object Security.Principal.WindowsPrincipal($id)
@@ -23,10 +27,8 @@ function Require-Admin {
         exit
     }
 }
-
 function Find-Python {
-    $commands = @('python','py')
-    foreach ($cmd in $commands) {
+    foreach ($cmd in @('python','py')) {
         $c = Get-Command $cmd -ErrorAction SilentlyContinue
         if ($c) {
             if ($cmd -eq 'py') { return @{ Command=$c.Source; Args=@('-3') } }
@@ -53,7 +55,6 @@ if (-not $pythonInfo) {
     }
     if (-not $pythonInfo) { throw "Python installation completed but python.exe could not be located. Reopen PowerShell and rerun the installer." }
 }
-
 Write-Host "Python: $($pythonInfo.Command)"
 
 Write-Step "Refreshing SiteWatcher client files"
@@ -62,30 +63,25 @@ $zipPath = Join-Path $tempRoot "client.zip"
 $extractPath = Join-Path $tempRoot "extract"
 New-Item -ItemType Directory -Force -Path $tempRoot,$extractPath,$InstallPath | Out-Null
 
-$envBackup = $null
 $existingEnv = Join-Path $InstallPath ".env"
-if (Test-Path $existingEnv) { $envBackup = Get-Content $existingEnv -Raw }
-
+$envBackup = if (Test-Path $existingEnv) { Get-Content $existingEnv -Raw } else { $null }
 Invoke-WebRequest -Uri $RepoZip -OutFile $zipPath -UseBasicParsing
 Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
 $source = Get-ChildItem $extractPath -Directory | Select-Object -First 1
 if (-not $source) { throw "Unable to extract SiteWatcher client package." }
-
 Get-ChildItem $source.FullName -Force | ForEach-Object {
-    if ($_.Name -in @('.git','.venv','data','logs','.env')) { return }
-    $dest = Join-Path $InstallPath $_.Name
-    if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
-    Copy-Item $_.FullName $dest -Recurse -Force
+    if ($_.Name -notin @('.git','.venv','data','logs','.env')) {
+        $dest = Join-Path $InstallPath $_.Name
+        if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
+        Copy-Item $_.FullName $dest -Recurse -Force
+    }
 }
-
 if ($envBackup) { Set-Content -Path $existingEnv -Value $envBackup -Encoding utf8 }
 Remove-Item $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Step "Creating Python environment"
 $venvPython = Join-Path $InstallPath ".venv\Scripts\python.exe"
-if (-not (Test-Path $venvPython)) {
-    & $pythonInfo.Command @($pythonInfo.Args) -m venv (Join-Path $InstallPath '.venv')
-}
+if (-not (Test-Path $venvPython)) { & $pythonInfo.Command @($pythonInfo.Args) -m venv (Join-Path $InstallPath '.venv') }
 & $venvPython -m pip install --upgrade pip
 & $venvPython -m pip install -r (Join-Path $InstallPath 'requirements.txt')
 
@@ -102,10 +98,14 @@ if (-not $ffmpeg -or -not $ffprobe) {
         $ffprobe = Get-Command ffprobe -ErrorAction SilentlyContinue
     }
 }
-if (-not $ffmpeg -or -not $ffprobe) {
-    Write-Warning "FFmpeg/FFprobe were not found. Ping/TCP/HTTP/HTTPS/ONVIF will work, but RTSP checks, snapshots and previews will not work until FFmpeg is installed and available in PATH."
+if ($ffmpeg -and $ffprobe) {
+    $binDir = Join-Path $InstallPath 'bin'
+    New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+    Copy-Item $ffmpeg.Source (Join-Path $binDir 'ffmpeg.exe') -Force
+    Copy-Item $ffprobe.Source (Join-Path $binDir 'ffprobe.exe') -Force
+    Write-Host "FFmpeg bundled into $binDir"
 } else {
-    Write-Host "FFmpeg: $($ffmpeg.Source)"
+    Write-Warning "FFmpeg/FFprobe were not found. Ping/TCP/HTTP/HTTPS/ONVIF will work, but RTSP checks, snapshots and previews will not work until FFmpeg is installed."
 }
 
 Write-Step "Configuring SiteWatcher"
@@ -113,11 +113,13 @@ $envFile = Join-Path $InstallPath ".env"
 $existing = @{}
 if (Test-Path $envFile) {
     Get-Content $envFile | ForEach-Object {
-        $line = $_.Trim(); if (-not $line -or $line.StartsWith('#')) { return }
-        $parts = $line -split '=',2; if ($parts.Count -eq 2) { $existing[$parts[0].Trim()] = $parts[1].Trim() }
+        $line = $_.Trim()
+        if ($line -and -not $line.StartsWith('#')) {
+            $parts = $line -split '=',2
+            if ($parts.Count -eq 2) { $existing[$parts[0].Trim()] = $parts[1].Trim() }
+        }
     }
 }
-
 if (-not $ServerUrl) { $ServerUrl = $existing['SITEWATCH_SERVER_URL'] }
 if (-not $AgentToken) { $AgentToken = $existing['SITEWATCH_AGENT_TOKEN'] }
 if (-not $DiscoveryCidrs) { $DiscoveryCidrs = $existing['SITEWATCH_DISCOVERY_CIDRS'] }
@@ -126,12 +128,15 @@ if (-not $AgentToken) { $AgentToken = Read-Host "SiteWatcher agent token" }
 if (-not $DiscoveryCidrs) { $DiscoveryCidrs = Read-Host "Discovery CIDR range(s), comma separated (example 192.168.1.0/24,192.168.4.0/24)" }
 if (-not $ServerUrl -or -not $AgentToken) { throw "Server URL and agent token are required." }
 
+$discoveryInterval = Get-OrDefault $existing 'SITEWATCH_DISCOVERY_INTERVAL_SECONDS' '900'
+$snapshotInterval = Get-OrDefault $existing 'SITEWATCH_SNAPSHOT_INTERVAL_SECONDS' '300'
 $config = @(
     "SITEWATCH_SERVER_URL=$($ServerUrl.TrimEnd('/'))",
     "SITEWATCH_AGENT_TOKEN=$AgentToken",
     "SITEWATCH_DISCOVERY_CIDRS=$DiscoveryCidrs",
-    "SITEWATCH_DISCOVERY_INTERVAL_SECONDS=$($existing['SITEWATCH_DISCOVERY_INTERVAL_SECONDS'] ?? '900')",
-    "SITEWATCH_SNAPSHOT_INTERVAL_SECONDS=$($existing['SITEWATCH_SNAPSHOT_INTERVAL_SECONDS'] ?? '300')"
+    "SITEWATCH_DISCOVERY_INTERVAL_SECONDS=$discoveryInterval",
+    "SITEWATCH_SNAPSHOT_INTERVAL_SECONDS=$snapshotInterval",
+    "SITEWATCH_FFMPEG_DIR=$(Join-Path $InstallPath 'bin')"
 )
 Set-Content -Path $envFile -Value $config -Encoding utf8
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallPath 'data'),(Join-Path $InstallPath 'logs') | Out-Null
