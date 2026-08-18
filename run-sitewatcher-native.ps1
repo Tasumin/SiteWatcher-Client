@@ -13,28 +13,35 @@ function Test-SiteWatcherInstall([string]$Path) {
     )
 }
 
-# Always use the configured installation directory as the native agent home,
-# regardless of where this runner script was downloaded or launched from.
 New-Item -ItemType Directory -Force -Path $InstallPath | Out-Null
 
 if (-not (Test-SiteWatcherInstall $InstallPath)) {
     Write-Host "SiteWatcher is not installed in $InstallPath." -ForegroundColor Yellow
-    Write-Host "Starting the native SiteWatcher installer..." -ForegroundColor Cyan
+    Write-Host "Downloading the latest native SiteWatcher installer..." -ForegroundColor Cyan
 
-    $installer = Join-Path $PSScriptRoot "install-sitewatcher-native.ps1"
-    if (-not (Test-Path $installer)) {
-        $installer = Join-Path $env:TEMP "install-sitewatcher-native.ps1"
-        Invoke-WebRequest -Uri $RepoInstaller -OutFile $installer -UseBasicParsing
-    }
+    # Never use a potentially stale installer sitting beside this runner.
+    # Always fetch the current installer from the client repository.
+    $installer = Join-Path $env:TEMP ("install-sitewatcher-native-" + [guid]::NewGuid().ToString('N') + ".ps1")
+    Invoke-WebRequest -Uri ($RepoInstaller + "?v=" + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) -OutFile $installer -UseBasicParsing
 
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -InstallPath $InstallPath
-    if ($LASTEXITCODE -ne 0) {
-        throw "SiteWatcher installation failed with exit code $LASTEXITCODE."
+    try {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -InstallPath $InstallPath
+        if ($LASTEXITCODE -ne 0) {
+            throw "SiteWatcher installation failed with exit code $LASTEXITCODE."
+        }
+    } finally {
+        Remove-Item $installer -Force -ErrorAction SilentlyContinue
     }
 
     if (-not (Test-SiteWatcherInstall $InstallPath)) {
         throw "SiteWatcher installation did not complete successfully in $InstallPath."
     }
+
+    # The installer registers and starts the scheduled task itself. Avoid
+    # launching a second foreground agent from this bootstrap invocation.
+    Write-Host "SiteWatcher installation completed in $InstallPath." -ForegroundColor Green
+    Write-Host "The SiteWatcher Agent scheduled task has been started." -ForegroundColor Green
+    exit 0
 }
 
 Set-Location $InstallPath
