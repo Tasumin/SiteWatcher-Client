@@ -1,6 +1,27 @@
-import subprocess, socket, time
+import subprocess, socket, time, ssl
 from urllib.parse import urlparse, urlunparse
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.poolmanager import PoolManager
+
+class LegacyTLSAdapter(HTTPAdapter):
+    """Per-session TLS compatibility for older embedded web servers."""
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        try:
+            context.set_ciphers("DEFAULT:@SECLEVEL=1")
+        except ssl.SSLError:
+            pass
+        try:
+            context.minimum_version = ssl.TLSVersion.TLSv1
+        except Exception:
+            pass
+        if hasattr(ssl, "OP_LEGACY_SERVER_CONNECT"):
+            context.options |= ssl.OP_LEGACY_SERVER_CONNECT
+        pool_kwargs["ssl_context"] = context
+        self.poolmanager = PoolManager(num_pools=connections, maxsize=maxsize, block=block, **pool_kwargs)
 
 def ping(host: str, timeout: int):
     start = time.monotonic()
@@ -15,10 +36,15 @@ def tcp(host: str, port: int, timeout: int):
     except Exception as e:
         return False, int((time.monotonic() - start) * 1000), str(e)
 
-def http_check(url: str, timeout: int, verify_tls: bool):
+def http_check(url: str, timeout: int, verify_tls: bool, legacy_tls: bool = False):
     start = time.monotonic()
     try:
-        r = requests.get(url, timeout=timeout, verify=verify_tls, allow_redirects=True)
+        if legacy_tls and url.lower().startswith("https://"):
+            session = requests.Session()
+            session.mount("https://", LegacyTLSAdapter())
+            r = session.get(url, timeout=timeout, verify=False, allow_redirects=True)
+        else:
+            r = requests.get(url, timeout=timeout, verify=verify_tls, allow_redirects=True)
         ok = r.status_code < 500
         return ok, int((time.monotonic() - start) * 1000), None if ok else f"HTTP {r.status_code}"
     except Exception as e:
@@ -53,7 +79,7 @@ def run_device(device: dict):
         elif typ == "tcp": ok, latency, error = tcp(host, check.get("port") or 80, timeout)
         elif typ in ("http", "https"):
             url = check.get("url") or f"{typ}://{host}{check.get('path') or '/'}"
-            ok, latency, error = http_check(url, timeout, check.get("verifyTls", True))
+            ok, latency, error = http_check(url, timeout, check.get("verifyTls", True), check.get("legacyTls", False))
         elif typ == "rtsp":
             url = check.get("url") or f"rtsp://{host}:554/"
             ok, latency, error = rtsp(url, check.get("username"), check.get("password"), timeout)
