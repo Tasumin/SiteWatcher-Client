@@ -1,75 +1,72 @@
 param(
-    [string]$InstallPath = "C:\SiteWatcher-Agent"
+    [string]$InstallPath = "C:\SiteWatcher-Agent",
+    [ValidateSet('Start','Stop','Restart','Status','Upgrade')]
+    [string]$Action = 'Status'
 )
 
 $ErrorActionPreference = "Stop"
 $RepoInstaller = "https://raw.githubusercontent.com/Tasumin/SiteWatcher-Client/main/install-sitewatcher-native.ps1"
+$ServiceName = "SiteWatcherAgent"
 
-function Test-SiteWatcherInstall([string]$Path) {
-    return (
-        (Test-Path (Join-Path $Path ".env")) -and
-        (Test-Path (Join-Path $Path ".venv\Scripts\python.exe")) -and
-        (Test-Path (Join-Path $Path "sitewatch_agent\main.py"))
-    )
+function Require-Admin {
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $p = New-Object Security.Principal.WindowsPrincipal($id)
+    if (-not $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        $args = @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"' + $PSCommandPath + '"'),'-InstallPath',('"' + $InstallPath + '"'),'-Action',$Action)
+        Start-Process powershell.exe -Verb RunAs -ArgumentList ($args -join ' ')
+        exit
+    }
 }
 
-New-Item -ItemType Directory -Force -Path $InstallPath | Out-Null
-
-if (-not (Test-SiteWatcherInstall $InstallPath)) {
-    Write-Host "SiteWatcher is not installed in $InstallPath." -ForegroundColor Yellow
-    Write-Host "Downloading the latest native SiteWatcher installer..." -ForegroundColor Cyan
-
-    # Never use a potentially stale installer sitting beside this runner.
-    # Always fetch the current installer from the client repository.
+function Invoke-LatestInstaller {
     $installer = Join-Path $env:TEMP ("install-sitewatcher-native-" + [guid]::NewGuid().ToString('N') + ".ps1")
     Invoke-WebRequest -Uri ($RepoInstaller + "?v=" + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) -OutFile $installer -UseBasicParsing
-
     try {
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -InstallPath $InstallPath
-        if ($LASTEXITCODE -ne 0) {
-            throw "SiteWatcher installation failed with exit code $LASTEXITCODE."
-        }
+        if ($LASTEXITCODE -ne 0) { throw "SiteWatcher installer failed with exit code $LASTEXITCODE." }
     } finally {
         Remove-Item $installer -Force -ErrorAction SilentlyContinue
     }
+}
 
-    if (-not (Test-SiteWatcherInstall $InstallPath)) {
-        throw "SiteWatcher installation did not complete successfully in $InstallPath."
-    }
+Require-Admin
+New-Item -ItemType Directory -Force -Path $InstallPath | Out-Null
+$service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 
-    # The installer registers and starts the scheduled task itself. Avoid
-    # launching a second foreground agent from this bootstrap invocation.
-    Write-Host "SiteWatcher installation completed in $InstallPath." -ForegroundColor Green
-    Write-Host "The SiteWatcher Agent scheduled task has been started." -ForegroundColor Green
+if (-not $service) {
+    Write-Host "SiteWatcher Windows service is not installed. Installing it now..." -ForegroundColor Yellow
+    Invoke-LatestInstaller
     exit 0
 }
 
-Set-Location $InstallPath
-
-$envFile = Join-Path $InstallPath ".env"
-Get-Content $envFile | ForEach-Object {
-    $line = $_.Trim()
-    if (-not $line -or $line.StartsWith("#")) { return }
-    $parts = $line -split "=", 2
-    if ($parts.Count -eq 2) {
-        [Environment]::SetEnvironmentVariable($parts[0].Trim(), $parts[1].Trim(), "Process")
+switch ($Action) {
+    'Start' {
+        if ($service.Status -ne 'Running') { Start-Service -Name $ServiceName }
     }
+    'Stop' {
+        if ($service.Status -ne 'Stopped') { Stop-Service -Name $ServiceName -Force }
+    }
+    'Restart' {
+        if ($service.Status -ne 'Stopped') { Stop-Service -Name $ServiceName -Force }
+        Start-Service -Name $ServiceName
+    }
+    'Upgrade' {
+        Invoke-LatestInstaller
+        exit 0
+    }
+    'Status' { }
 }
 
-$dataDir = Join-Path $InstallPath "data"
-$logDir = Join-Path $InstallPath "logs"
-New-Item -ItemType Directory -Force -Path $dataDir,$logDir | Out-Null
-
-if (-not $env:SITEWATCH_DB) { $env:SITEWATCH_DB = Join-Path $dataDir "queue.db" }
-if (-not $env:SITEWATCH_LOCK_FILE) { $env:SITEWATCH_LOCK_FILE = Join-Path $dataDir "sitewatch-agent.lock" }
-if (-not $env:SITEWATCH_FFMPEG_DIR) {
-    $localFfmpeg = Join-Path $InstallPath "bin"
-    if (Test-Path (Join-Path $localFfmpeg "ffmpeg.exe")) { $env:SITEWATCH_FFMPEG_DIR = $localFfmpeg }
-}
-
-$python = Join-Path $InstallPath ".venv\Scripts\python.exe"
-$logFile = Join-Path $logDir "agent.log"
-"`n===== SiteWatcher Native start $(Get-Date -Format o) =====" | Out-File -FilePath $logFile -Append -Encoding utf8
-
-& $python -u -m sitewatch_agent.main *>> $logFile
-exit $LASTEXITCODE
+$service = Get-Service -Name $ServiceName
+Write-Host "SiteWatcher Agent" -ForegroundColor Cyan
+Write-Host "Service name : $ServiceName"
+Write-Host "Status       : $($service.Status)" -ForegroundColor $(if ($service.Status -eq 'Running') {'Green'} else {'Yellow'})
+Write-Host "Install path : $InstallPath"
+Write-Host "Log          : $(Join-Path $InstallPath 'logs\agent.log')"
+Write-Host ""
+Write-Host "Commands:"
+Write-Host "  .\run-sitewatcher-native.ps1 -Action Start"
+Write-Host "  .\run-sitewatcher-native.ps1 -Action Stop"
+Write-Host "  .\run-sitewatcher-native.ps1 -Action Restart"
+Write-Host "  .\run-sitewatcher-native.ps1 -Action Upgrade"
+Write-Host "  .\run-sitewatcher-native.ps1 -Action Status"
