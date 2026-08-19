@@ -78,11 +78,8 @@ function Stop-SiteWatcherService {
 }
 
 Require-Admin
-
-# Stop the existing service before replacing files during an upgrade.
 Stop-SiteWatcherService
 
-# Remove the old Scheduled Task implementation so only one native agent can run.
 $oldTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 if ($oldTask) {
     Write-Step "Removing legacy scheduled task"
@@ -141,8 +138,6 @@ if ($LASTEXITCODE -ne 0) { throw "Unable to upgrade pip in the SiteWatcher Pytho
 & $venvPython -m pip install -r (Join-Path $InstallPath 'requirements.txt') --upgrade
 if ($LASTEXITCODE -ne 0) { throw "Unable to install SiteWatcher Python dependencies." }
 
-# pywin32 normally installs its service host automatically, but older environments
-# may still include a post-install helper. Run it when present.
 $pywinPostInstall = Join-Path $venvPath 'Scripts\pywin32_postinstall.py'
 if (Test-Path $pywinPostInstall) {
     & $venvPython $pywinPostInstall -install | Out-Null
@@ -214,20 +209,20 @@ $serviceScript = Join-Path $InstallPath 'sitewatch_agent\windows_service.py'
 if (-not (Test-Path $serviceScript)) { throw "Windows service host is missing: $serviceScript" }
 $existingService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existingService) {
-    & $venvPython $serviceScript update --startup auto
+    & $venvPython $serviceScript --startup delayed update
 } else {
-    & $venvPython $serviceScript install --startup auto
+    & $venvPython $serviceScript --startup delayed install
 }
 if ($LASTEXITCODE -ne 0) { throw "Unable to install/update the $ServiceName Windows service." }
 
-# Use delayed automatic startup and restart the service if its process exits.
 & sc.exe config $ServiceName start= delayed-auto | Out-Null
 & sc.exe failure $ServiceName reset= 86400 actions= restart/60000/restart/60000/restart/60000 | Out-Null
 & sc.exe failureflag $ServiceName 1 | Out-Null
 
 Write-Step "Starting SiteWatcher Agent service"
-Start-Service -Name $ServiceName
-$svc = Get-Service -Name $ServiceName
+$svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+if (-not $svc) { throw "$ServiceName was not found after installation." }
+if ($svc.Status -ne 'Running') { Start-Service -Name $ServiceName }
 $svc.WaitForStatus('Running', (New-TimeSpan -Seconds 30))
 $svc = Get-Service -Name $ServiceName
 
