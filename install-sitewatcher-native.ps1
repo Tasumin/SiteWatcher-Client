@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$InstallerBuild = "0.8.1-service-fix"
 $RepoZip = "https://github.com/Tasumin/SiteWatcher-Client/archive/refs/heads/main.zip"
 $TaskName = "SiteWatcher Agent"
 $ServiceName = "SiteWatcherAgent"
@@ -78,6 +79,8 @@ function Stop-SiteWatcherService {
 }
 
 Require-Admin
+Write-Host "SiteWatcher native installer build: $InstallerBuild" -ForegroundColor DarkGray
+
 Stop-SiteWatcherService
 
 $oldTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -137,11 +140,6 @@ if (-not (Test-Path $venvPython)) {
 if ($LASTEXITCODE -ne 0) { throw "Unable to upgrade pip in the SiteWatcher Python environment." }
 & $venvPython -m pip install -r (Join-Path $InstallPath 'requirements.txt') --upgrade
 if ($LASTEXITCODE -ne 0) { throw "Unable to install SiteWatcher Python dependencies." }
-
-$pywinPostInstall = Join-Path $venvPath 'Scripts\pywin32_postinstall.py'
-if (Test-Path $pywinPostInstall) {
-    & $venvPython $pywinPostInstall -install | Out-Null
-}
 
 Write-Step "Checking FFmpeg / FFprobe"
 $ffmpeg = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
