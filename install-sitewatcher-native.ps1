@@ -6,7 +6,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$InstallerBuild = "0.9.2-latest-package"
+$InstallerBuild = "0.9.4-latest-package"
 $TaskName = "SiteWatcher Agent"
 $ServiceName = "SiteWatcherAgent"
 
@@ -137,12 +137,9 @@ $extractPath = Join-Path $tempRoot 'extract'
 New-Item -ItemType Directory -Force -Path $tempRoot,$extractPath | Out-Null
 $envFile = Join-Path $InstallPath '.env'
 $envBackup = if (Test-Path $envFile) { Get-Content $envFile -Raw } else { $null }
-$packageUrl = "$($ServerUrl.TrimEnd('/'))/downloads/sitewatcher-client?ts=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
-Write-Host "Downloading latest client package from $($ServerUrl.TrimEnd('/'))..." -ForegroundColor DarkGray
+$packageUrl = "$($ServerUrl.TrimEnd('/'))/downloads/sitewatcher-client?v=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
 $packageResponse = Invoke-WebRequest -Uri $packageUrl -OutFile $zipPath -UseBasicParsing -PassThru
-if ($packageResponse.Headers['X-SiteWatcher-Client-Commit']) {
-    Write-Host "Client commit: $($packageResponse.Headers['X-SiteWatcher-Client-Commit'])" -ForegroundColor DarkGray
-}
+if ($packageResponse.Headers['X-SiteWatcher-Client-Commit']) { Write-Host "Client commit: $($packageResponse.Headers['X-SiteWatcher-Client-Commit'])" -ForegroundColor DarkGray }
 Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
 $source = Get-ChildItem $extractPath -Directory | Select-Object -First 1
 if (-not $source) { throw "Unable to extract SiteWatcher client package." }
@@ -267,15 +264,11 @@ try {
 }
 
 $svc = Get-Service -Name $ServiceName
-$versionFile = Join-Path $InstallPath 'sitewatch_agent\__init__.py'
-$installedVersion = $null
-if (Test-Path $versionFile) {
-    $versionText = Get-Content $versionFile -Raw
-    if ($versionText -match '__version__\s*=\s*["'']([^"'']+)["'']') { $installedVersion = $Matches[1] }
-}
+$agentVersionFile = Join-Path $InstallPath 'sitewatch_agent\__init__.py'
+$agentVersion = if (Test-Path $agentVersionFile) { ((Get-Content $agentVersionFile -Raw) -replace '(?s).*__version__\s*=\s*["'']([^"'']+)["''].*','$1').Trim() } else { 'unknown' }
 Write-Host "Service: $($svc.DisplayName) ($ServiceName)" -ForegroundColor Green
 Write-Host "Status: $($svc.Status)" -ForegroundColor Green
-if ($installedVersion) { Write-Host "Agent version: $installedVersion" -ForegroundColor Green }
+Write-Host "Agent version: $agentVersion" -ForegroundColor Green
 Write-Host "Startup: Automatic (Delayed Start)"
 Write-Host "Server: $ServerUrl"
 Write-Host "Install path: $InstallPath"
