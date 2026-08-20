@@ -1,4 +1,5 @@
 import os
+import threading
 from pathlib import Path
 
 
@@ -29,10 +30,19 @@ def main() -> None:
     os.chdir(root)
     load_env(root)
 
-    # Import only after .env is loaded because the agent reads SiteWatcher
-    # configuration from environment variables at import time.
-    # main.py owns all background worker startup, including the remote tunnel.
+    # Import only after .env is loaded because workers read configuration
+    # from environment variables at import time.
     from .main import main as agent_main
+    from .remote_console import remote_console_loop
+
+    console_thread = threading.Thread(
+        target=remote_console_loop,
+        name="sitewatch-remote-console",
+        daemon=True,
+    )
+    console_thread.start()
+    print("[startup] worker remote-console started", flush=True)
+
     agent_main()
 
 
