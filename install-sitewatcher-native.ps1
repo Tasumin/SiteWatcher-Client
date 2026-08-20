@@ -6,7 +6,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$InstallerBuild = "0.9.1-latest-package"
+$InstallerBuild = "0.9.2-latest-package"
 $TaskName = "SiteWatcher Agent"
 $ServiceName = "SiteWatcherAgent"
 
@@ -17,7 +17,7 @@ function Get-OrDefault($table, $key, $default) {
 }
 function Require-Admin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $p = New-Object System.Security.Principal.WindowsPrincipal($id)
+    $p = New-Object Security.Principal.WindowsPrincipal($id)
     if (-not $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         Write-Host "Administrator rights are required. Relaunching elevated..." -ForegroundColor Yellow
         $args = @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"' + $PSCommandPath + '"'),'-InstallPath',('"' + $InstallPath + '"'))
@@ -86,13 +86,18 @@ function Remove-ExistingService {
 function Show-ServiceDiagnostics {
     Write-Host "`n--- SiteWatcher service diagnostics ---" -ForegroundColor Yellow
     & sc.exe queryex $ServiceName 2>&1 | ForEach-Object { Write-Host $_ }
-    Get-ChildItem (Join-Path $InstallPath 'logs') -File -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -First 6 |
-        ForEach-Object {
-            Write-Host "`n--- $($_.FullName) ---" -ForegroundColor Yellow
-            Get-Content $_.FullName -Tail 80 -ErrorAction SilentlyContinue
+    $logs = @(
+        (Join-Path $InstallPath 'logs\SiteWatcherAgent.wrapper.log'),
+        (Join-Path $InstallPath 'logs\SiteWatcherAgent.out.log'),
+        (Join-Path $InstallPath 'logs\SiteWatcherAgent.err.log'),
+        (Join-Path $InstallPath 'logs\agent.log')
+    )
+    foreach ($log in $logs) {
+        if (Test-Path $log) {
+            Write-Host "`n--- $log ---" -ForegroundColor Yellow
+            Get-Content $log -Tail 80 -ErrorAction SilentlyContinue
         }
+    }
 }
 
 Require-Admin
@@ -132,13 +137,12 @@ $extractPath = Join-Path $tempRoot 'extract'
 New-Item -ItemType Directory -Force -Path $tempRoot,$extractPath | Out-Null
 $envFile = Join-Path $InstallPath '.env'
 $envBackup = if (Test-Path $envFile) { Get-Content $envFile -Raw } else { $null }
-
-$packageUrl = $ServerUrl.TrimEnd('/') + "/downloads/sitewatcher-client?v=" + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-Write-Host "Downloading latest client package from $($ServerUrl.TrimEnd('/'))..."
-$response = Invoke-WebRequest -Uri $packageUrl -OutFile $zipPath -UseBasicParsing -Headers @{ "Cache-Control"="no-cache"; "Pragma"="no-cache" } -PassThru
-$clientCommit = $response.Headers['X-SiteWatcher-Client-Commit']
-if ($clientCommit) { Write-Host "Client commit: $clientCommit" -ForegroundColor DarkGray }
-
+$packageUrl = "$($ServerUrl.TrimEnd('/'))/downloads/sitewatcher-client?ts=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
+Write-Host "Downloading latest client package from $($ServerUrl.TrimEnd('/'))..." -ForegroundColor DarkGray
+$packageResponse = Invoke-WebRequest -Uri $packageUrl -OutFile $zipPath -UseBasicParsing -PassThru
+if ($packageResponse.Headers['X-SiteWatcher-Client-Commit']) {
+    Write-Host "Client commit: $($packageResponse.Headers['X-SiteWatcher-Client-Commit'])" -ForegroundColor DarkGray
+}
 Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
 $source = Get-ChildItem $extractPath -Directory | Select-Object -First 1
 if (-not $source) { throw "Unable to extract SiteWatcher client package." }
@@ -222,8 +226,8 @@ New-Item -ItemType Directory -Force -Path (Join-Path $InstallPath 'data'),(Join-
 Write-Step "Installing WinSW service wrapper"
 $wrapper = Join-Path $InstallPath 'SiteWatcherAgent.exe'
 $wrapperConfig = Join-Path $InstallPath 'SiteWatcherAgent.xml'
-$winSwUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET4.exe"
-Invoke-WebRequest -Uri $winSwUrl -OutFile $wrapper -UseBasicParsing
+$WinSwUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET4.exe"
+Invoke-WebRequest -Uri $WinSwUrl -OutFile $wrapper -UseBasicParsing
 
 $xml = @"
 <service>
@@ -263,15 +267,15 @@ try {
 }
 
 $svc = Get-Service -Name $ServiceName
-$installedVersion = "unknown"
 $versionFile = Join-Path $InstallPath 'sitewatch_agent\__init__.py'
+$installedVersion = $null
 if (Test-Path $versionFile) {
-    $match = Select-String -Path $versionFile -Pattern '__version__\s*=\s*["'']([^"'']+)["'']' | Select-Object -First 1
-    if ($match -and $match.Matches.Count) { $installedVersion = $match.Matches[0].Groups[1].Value }
+    $versionText = Get-Content $versionFile -Raw
+    if ($versionText -match '__version__\s*=\s*["'']([^"'']+)["'']') { $installedVersion = $Matches[1] }
 }
 Write-Host "Service: $($svc.DisplayName) ($ServiceName)" -ForegroundColor Green
 Write-Host "Status: $($svc.Status)" -ForegroundColor Green
-Write-Host "Agent version: $installedVersion" -ForegroundColor Green
+if ($installedVersion) { Write-Host "Agent version: $installedVersion" -ForegroundColor Green }
 Write-Host "Startup: Automatic (Delayed Start)"
 Write-Host "Server: $ServerUrl"
 Write-Host "Install path: $InstallPath"
