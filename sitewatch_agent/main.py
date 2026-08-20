@@ -5,6 +5,7 @@ from .checks import run_device, capture_snapshot
 from .storage import Storage
 from .discovery import scan_network
 from .onvif import probe_onvif
+from .remote_tunnel import remote_tunnel_loop
 
 SERVER = os.environ["SITEWATCH_SERVER_URL"].rstrip("/")
 TOKEN = os.environ["SITEWATCH_AGENT_TOKEN"]
@@ -217,6 +218,7 @@ def main():
     start_worker("preview", preview_loop)
     start_worker("retry", monitor_retry_loop)
     start_worker("onvif", onvif_loop)
+    start_worker("remote-tunnel", lambda: remote_tunnel_loop(SERVER, TOKEN))
     last_config = time.time()
     while True:
         now = time.time()
