@@ -1,5 +1,4 @@
 import os
-import threading
 from pathlib import Path
 
 
@@ -32,20 +31,8 @@ def main() -> None:
 
     # Import only after .env is loaded because the agent reads SiteWatcher
     # configuration from environment variables at import time.
+    # main.py owns all background worker startup, including the remote tunnel.
     from .main import main as agent_main
-    from .tunnel import tunnel_loop
-
-    server_url = os.environ["SITEWATCH_SERVER_URL"].rstrip("/")
-    token = os.environ["SITEWATCH_AGENT_TOKEN"]
-    tunnel_thread = threading.Thread(
-        target=tunnel_loop,
-        args=(server_url, token),
-        name="sitewatch-remote-tunnel",
-        daemon=True,
-    )
-    tunnel_thread.start()
-    print("[startup] worker remote-tunnel started", flush=True)
-
     agent_main()
 
 
