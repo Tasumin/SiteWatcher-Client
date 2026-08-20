@@ -2,9 +2,15 @@
 
 Native Windows monitoring agent for SiteWatcher.
 
-Current version: **0.8.2**
+Current version: **0.8.3**
 
 The Windows client runs as a real Windows service named **SiteWatcherAgent** using WinSW. Docker and WSL are not required.
+
+The production SiteWatcher server is:
+
+```text
+https://monitoring.talondns.com
+```
 
 ## Features
 
@@ -35,14 +41,16 @@ The default installation directory is:
 C:\SiteWatcher-Agent
 ```
 
-On the first run, the installer will:
+On a new install, the launcher automatically uses `https://monitoring.talondns.com` as the SiteWatcher server URL. The installer will still ask for the agent token and discovery CIDR ranges.
+
+The installer will:
 
 1. Check for a working Python installation and install Python if required.
 2. Download the latest SiteWatcher client.
 3. Create the Python virtual environment.
 4. Install the required Python dependencies.
 5. Install/check FFmpeg for RTSP monitoring and snapshots.
-6. Ask for the SiteWatcher server URL, agent token and discovery CIDR ranges if they are not already configured.
+6. Configure the SiteWatcher server URL, agent token and discovery CIDR ranges.
 7. Install the **SiteWatcherAgent** Windows service using WinSW.
 8. Configure the service for Automatic (Delayed Start) and restart-on-failure.
 9. Start the service.
@@ -80,6 +88,14 @@ Run:
 
 The upgrade process stops the service, downloads the latest client, preserves the existing `.env`, updates dependencies and service configuration, then starts the service again.
 
+When an existing install is configured with a legacy `*.vercel.app` SiteWatcher server URL, the upgrade launcher automatically changes only `SITEWATCH_SERVER_URL` to:
+
+```text
+https://monitoring.talondns.com
+```
+
+The existing agent token, discovery CIDRs, discovery interval, snapshot interval and other local settings are preserved. Custom server URLs that are not hosted on Vercel are left unchanged.
+
 ## Configuration
 
 Site-specific configuration is stored at:
@@ -91,7 +107,7 @@ C:\SiteWatcher-Agent\.env
 Important settings include:
 
 ```text
-SITEWATCH_SERVER_URL=https://your-sitewatcher-server.example
+SITEWATCH_SERVER_URL=https://monitoring.talondns.com
 SITEWATCH_AGENT_TOKEN=your-agent-token
 SITEWATCH_DISCOVERY_CIDRS=192.168.1.0/24,192.168.4.0/24
 SITEWATCH_DISCOVERY_INTERVAL_SECONDS=900
