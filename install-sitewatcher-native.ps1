@@ -1,12 +1,12 @@
 param(
     [string]$InstallPath = "C:\SiteWatcher-Agent",
-    [string]$ServerUrl = "",
+    [string]$ServerUrl = "https://monitoring.talondns.com",
     [string]$AgentToken = "",
     [string]$DiscoveryCidrs = ""
 )
 
 $ErrorActionPreference = "Stop"
-$InstallerBuild = "0.8.2-winsw"
+$InstallerBuild = "0.9.0-token-install"
 $RepoZip = "https://github.com/Tasumin/SiteWatcher-Client/archive/refs/heads/main.zip"
 $WinSwUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET4.exe"
 $TaskName = "SiteWatcher Agent"
@@ -113,8 +113,6 @@ if ($oldTask) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
 }
 
-# We intentionally recreate the service on upgrade. This cleanly migrates older
-# pywin32-based installs to the WinSW wrapper and avoids stale ImagePath values.
 Remove-ExistingService
 
 Write-Step "Checking Python"
@@ -268,6 +266,7 @@ $svc = Get-Service -Name $ServiceName
 Write-Host "Service: $($svc.DisplayName) ($ServiceName)" -ForegroundColor Green
 Write-Host "Status: $($svc.Status)" -ForegroundColor Green
 Write-Host "Startup: Automatic (Delayed Start)"
+Write-Host "Server: $ServerUrl"
 Write-Host "Install path: $InstallPath"
 Write-Host "Service logs: $(Join-Path $InstallPath 'logs')"
 Write-Host "`nSiteWatcher native Windows service installed/upgraded successfully. Docker is not required." -ForegroundColor Green
