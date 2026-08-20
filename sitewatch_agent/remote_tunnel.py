@@ -65,7 +65,7 @@ def _relay_connection(server_url: str, token: str, request: dict) -> None:
                     data_ws.send(chunk, opcode=websocket.ABNF.OPCODE_BINARY)
             except Exception as exc:
                 if not stopped.is_set():
-                    print(f"[tunnel] TCP→WSS relay ended: {exc}", flush=True)
+                    print(f"[tunnel] TCP->WSS relay ended: {exc}", flush=True)
             finally:
                 stopped.set()
                 _close_quietly(data_ws)
@@ -80,12 +80,11 @@ def _relay_connection(server_url: str, token: str, request: dict) -> None:
 
         while not stopped.is_set():
             frame = data_ws.recv()
-            if frame is None:
+            if frame is None or frame == b"" or frame == "":
                 break
             if isinstance(frame, str):
                 frame = frame.encode("utf-8")
-            if frame:
-                tcp.sendall(frame)
+            tcp.sendall(frame)
 
         stopped.set()
     except Exception as exc:
@@ -103,7 +102,7 @@ def _relay_connection(server_url: str, token: str, request: dict) -> None:
 
 def remote_tunnel_loop(server_url: str, token: str) -> None:
     """Maintain the persistent outbound SiteWatcher remote-management channel."""
-    retry_seconds = 5
+    retry_seconds = 2
 
     while True:
         control_ws = None
@@ -120,18 +119,22 @@ def remote_tunnel_loop(server_url: str, token: str) -> None:
             )
             control_ws.settimeout(None)
             print("[tunnel] remote management channel connected", flush=True)
-            retry_seconds = 5
+            retry_seconds = 2
 
             while True:
                 raw = control_ws.recv()
-                if raw is None:
-                    raise ConnectionError("remote management channel closed")
+                if raw is None or raw == b"" or raw == "":
+                    raise ConnectionError("remote management channel closed by server")
                 if isinstance(raw, bytes):
                     raw = raw.decode("utf-8", errors="replace")
 
                 try:
                     message = json.loads(raw)
-                except Exception:
+                except json.JSONDecodeError as exc:
+                    print(f"[tunnel] ignoring non-JSON control frame: {exc}", flush=True)
+                    continue
+
+                if not isinstance(message, dict):
                     continue
 
                 message_type = str(message.get("type") or "")
@@ -150,10 +153,10 @@ def remote_tunnel_loop(server_url: str, token: str) -> None:
                     continue
 
         except Exception as exc:
-            print(f"[tunnel] connection error: {exc}; retrying in {retry_seconds}s", flush=True)
+            print(f"[tunnel] channel disconnected: {exc}; retrying in {retry_seconds}s", flush=True)
         finally:
             if control_ws is not None:
                 _close_quietly(control_ws)
 
         time.sleep(retry_seconds)
-        retry_seconds = min(retry_seconds * 2, 60)
+        retry_seconds = min(retry_seconds * 2, 30)
