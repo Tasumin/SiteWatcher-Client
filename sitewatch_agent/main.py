@@ -37,22 +37,51 @@ def start_worker(name, target):
     print(f"[startup] worker {name} started", flush=True)
 
 def acquire_single_instance_lock():
-    try: import fcntl
-    except ImportError:
-        print("[startup] WARNING: fcntl unavailable; single-instance lock disabled", flush=True)
-        return None
     os.makedirs(os.path.dirname(LOCK_FILE) or ".", exist_ok=True)
-    handle = open(LOCK_FILE, "a+")
-    try: fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        handle.seek(0); owner = handle.read().strip()
-        print(f"[startup] another SiteWatch agent already owns {LOCK_FILE}: {owner or 'unknown owner'}", flush=True)
-        print("[startup] refusing to start a duplicate worker.", flush=True)
-        sys.exit(2)
-    handle.seek(0); handle.truncate()
-    handle.write(f"instance={INSTANCE_ID} pid={os.getpid()} host={socket.gethostname()} started={datetime.now(timezone.utc).isoformat()}\n")
-    handle.flush()
-    return handle
+    handle = open(LOCK_FILE, "a+", encoding="utf-8")
+
+    try:
+        if os.name == "nt":
+            import msvcrt
+            # Windows byte-range locks require at least one byte to exist.
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write("\0")
+                handle.flush()
+            handle.seek(0)
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                handle.seek(1)
+                owner = handle.read().strip("\0\r\n ")
+                print(f"[startup] another SiteWatcher agent already owns {LOCK_FILE}: {owner or 'unknown owner'}", flush=True)
+                print("[startup] refusing to start a duplicate agent process.", flush=True)
+                handle.close()
+                sys.exit(2)
+        else:
+            import fcntl
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                handle.seek(0)
+                owner = handle.read().strip("\0\r\n ")
+                print(f"[startup] another SiteWatcher agent already owns {LOCK_FILE}: {owner or 'unknown owner'}", flush=True)
+                print("[startup] refusing to start a duplicate agent process.", flush=True)
+                handle.close()
+                sys.exit(2)
+
+        # Preserve byte 0 as the Windows lock byte and write owner metadata after it.
+        handle.seek(1 if os.name == "nt" else 0)
+        handle.truncate()
+        handle.write(f"instance={INSTANCE_ID} pid={os.getpid()} host={socket.gethostname()} started={datetime.now(timezone.utc).isoformat()}\n")
+        handle.flush()
+        return handle
+    except SystemExit:
+        raise
+    except Exception as exc:
+        try: handle.close()
+        except Exception: pass
+        raise RuntimeError(f"Unable to acquire SiteWatcher single-instance lock: {exc}") from exc
 
 def api(method, path, **kwargs):
     return requests.request(method, SERVER + path, headers=HEADERS, timeout=20, **kwargs)
