@@ -1,5 +1,4 @@
 import os
-import re
 import subprocess
 import time
 
@@ -9,6 +8,7 @@ import requests
 SERVER = os.environ["SITEWATCH_SERVER_URL"].rstrip("/")
 TOKEN = os.environ["SITEWATCH_AGENT_TOKEN"]
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+UPDATE_COMMAND = "__SITEWATCH_UPDATE_AGENT__"
 
 # Diagnostic-only console. Reject shell composition and only allow known
 # troubleshooting commands/cmdlets.
@@ -59,22 +59,32 @@ def _run(command: str, shell: str, timeout_seconds: int = 60):
             timeout=timeout_seconds,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        return {
-            "stdout": (completed.stdout or "")[:200000],
-            "stderr": (completed.stderr or "")[:200000],
-            "exitCode": completed.returncode,
-        }
+        return {"stdout": (completed.stdout or "")[:200000], "stderr": (completed.stderr or "")[:200000], "exitCode": completed.returncode}
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
         stderr = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
-        return {
-            "stdout": stdout[:200000],
-            "stderr": (stderr + "\nCommand timed out after 60 seconds.").strip()[:200000],
-            "exitCode": None,
-            "timedOut": True,
-        }
+        return {"stdout": stdout[:200000], "stderr": (stderr + "\nCommand timed out after 60 seconds.").strip()[:200000], "exitCode": None, "timedOut": True}
     except Exception as exc:
         return {"stdout": "", "stderr": str(exc), "exitCode": 1}
+
+
+def _launch_self_update():
+    installer_url = SERVER + "/downloads/sitewatcher-agent"
+    script = (
+        "$ErrorActionPreference='Stop'; "
+        "$i=Join-Path $env:TEMP 'install-sitewatcher-agent.ps1'; "
+        f"Invoke-WebRequest -Uri '{installer_url}' -OutFile $i -UseBasicParsing; "
+        f"& $i -ServerUrl '{SERVER}'"
+    )
+    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    subprocess.Popen(
+        ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        creationflags=flags,
+    )
 
 
 def remote_console_loop():
@@ -96,16 +106,25 @@ def remote_console_loop():
             command_id = str(item.get("id") or "")
             command = str(item.get("command") or "")
             shell = str(item.get("shell") or "powershell").lower()
+
+            if command == UPDATE_COMMAND and shell == "system":
+                print(f"[update] launching SiteWatcher self-update job id={command_id[:8]}", flush=True)
+                try:
+                    _launch_self_update()
+                    result = {"id":command_id,"stdout":"SiteWatcher agent update launched. The service will restart automatically.","stderr":"","exitCode":0}
+                except Exception as exc:
+                    result = {"id":command_id,"stdout":"","stderr":f"Unable to launch SiteWatcher update: {exc}","exitCode":1}
+                post = requests.post(SERVER + "/api/agent/commands", headers=HEADERS, json=result, timeout=20)
+                post.raise_for_status()
+                print(f"[update] update job id={command_id[:8]} acknowledged", flush=True)
+                time.sleep(10)
+                continue
+
             print(f"[console] executing diagnostic command id={command_id[:8]} shell={shell}", flush=True)
             result = _run(command, shell)
             result["id"] = command_id
 
-            post = requests.post(
-                SERVER + "/api/agent/commands",
-                headers=HEADERS,
-                json=result,
-                timeout=20,
-            )
+            post = requests.post(SERVER + "/api/agent/commands", headers=HEADERS, json=result, timeout=20)
             post.raise_for_status()
             print(f"[console] command id={command_id[:8]} completed", flush=True)
         except Exception as exc:
