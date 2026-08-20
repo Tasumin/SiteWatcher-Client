@@ -23,6 +23,22 @@ def _close_quietly(obj):
         pass
 
 
+def _control_close_details(ws) -> str:
+    code = getattr(ws, "close_status_code", None)
+    reason = getattr(ws, "close_reason", None)
+    sock = getattr(ws, "sock", None)
+    if code is None and sock is not None:
+        code = getattr(sock, "close_status_code", None)
+    if reason is None and sock is not None:
+        reason = getattr(sock, "close_reason", None)
+    parts = []
+    if code is not None:
+        parts.append(f"code={code}")
+    if reason:
+        parts.append(f"reason={reason}")
+    return " ".join(parts) if parts else "no close code/reason supplied"
+
+
 def _relay_connection(server_url: str, token: str, request: dict) -> None:
     connection_id = str(request.get("connectionId") or "")
     target_host = str(request.get("targetHost") or "").strip()
@@ -124,7 +140,8 @@ def remote_tunnel_loop(server_url: str, token: str) -> None:
             while True:
                 raw = control_ws.recv()
                 if raw is None or raw == b"" or raw == "":
-                    raise ConnectionError("remote management channel closed by server")
+                    details = _control_close_details(control_ws)
+                    raise ConnectionError(f"remote management channel closed by server ({details})")
                 if isinstance(raw, bytes):
                     raw = raw.decode("utf-8", errors="replace")
 
