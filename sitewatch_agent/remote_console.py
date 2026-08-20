@@ -4,7 +4,9 @@ import json
 import os
 import socket
 import subprocess
+import tempfile
 import time
+import uuid
 
 import requests
 
@@ -57,11 +59,51 @@ def _run(command: str, shell: str, timeout_seconds: int = 60):
         return {"stdout": "", "stderr": str(exc), "exitCode": 1}
 
 
+def _ps_quote(value: str) -> str:
+    return value.replace("'", "''")
+
+
 def _launch_self_update():
+    """Launch an updater outside the WinSW service process tree.
+
+    A child process of the service can be terminated when WinSW stops the
+    service during reinstall. A one-shot SYSTEM scheduled task survives that
+    stop/replacement and can finish the upgrade safely.
+    """
     installer_url = SERVER + "/downloads/sitewatcher-agent"
-    script = "$ErrorActionPreference='Stop'; $i=Join-Path $env:TEMP 'install-sitewatcher-agent.ps1'; " + f"Invoke-WebRequest -Uri '{installer_url}' -OutFile $i -UseBasicParsing; & $i -ServerUrl '{SERVER}'"
-    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    subprocess.Popen(["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True, creationflags=flags)
+    task_name = "SiteWatcher-Agent-Update-" + uuid.uuid4().hex[:10]
+    updater_path = os.path.join(tempfile.gettempdir(), task_name + ".ps1")
+
+    updater_script = f"""$ErrorActionPreference = 'Stop'
+Start-Sleep -Seconds 5
+$installer = Join-Path $env:TEMP 'install-sitewatcher-agent.ps1'
+try {{
+  Invoke-WebRequest -Uri '{_ps_quote(installer_url)}' -OutFile $installer -UseBasicParsing
+  & $installer -ServerUrl '{_ps_quote(SERVER)}'
+}} finally {{
+  try {{ Unregister-ScheduledTask -TaskName '{_ps_quote(task_name)}' -Confirm:$false -ErrorAction SilentlyContinue }} catch {{}}
+  try {{ Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue }} catch {{}}
+}}
+"""
+    with open(updater_path, "w", encoding="utf-8-sig") as handle:
+        handle.write(updater_script)
+
+    register = f"""
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "{updater_path}"'
+$principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+Register-ScheduledTask -TaskName '{task_name}' -Action $action -Principal $principal -Force | Out-Null
+Start-ScheduledTask -TaskName '{task_name}'
+"""
+    completed = subprocess.run(
+        ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", register],
+        capture_output=True,
+        text=True,
+        errors="replace",
+        timeout=30,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if completed.returncode != 0:
+        raise RuntimeError((completed.stderr or completed.stdout or "Unable to create update task").strip())
 
 
 def _scan_host(ip: str):
@@ -131,12 +173,14 @@ def remote_console_loop():
             shell = str(item.get("shell") or "powershell").lower()
 
             if command == UPDATE_COMMAND and shell == "system":
-                print(f"[update] launching SiteWatcher self-update job id={command_id[:8]}", flush=True)
+                print(f"[update] scheduling SiteWatcher self-update job id={command_id[:8]}", flush=True)
                 try:
                     _launch_self_update()
-                    _post_result(command_id, {"stdout":"SiteWatcher agent update launched. The service will restart automatically.","stderr":"","exitCode":0})
+                    _post_result(command_id, {"stdout":"SiteWatcher agent update scheduled as SYSTEM. The service will restart automatically.","stderr":"","exitCode":0})
+                    print(f"[update] self-update task scheduled id={command_id[:8]}", flush=True)
                 except Exception as exc:
-                    _post_result(command_id, {"stdout":"","stderr":f"Unable to launch SiteWatcher update: {exc}","exitCode":1})
+                    print(f"[update] unable to schedule update: {exc}", flush=True)
+                    _post_result(command_id, {"stdout":"","stderr":f"Unable to schedule SiteWatcher update: {exc}","exitCode":1})
                 time.sleep(10)
                 continue
 
