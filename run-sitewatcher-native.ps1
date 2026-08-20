@@ -7,6 +7,7 @@ param(
 $ErrorActionPreference = "Stop"
 $RepoInstaller = "https://raw.githubusercontent.com/Tasumin/SiteWatcher-Client/main/install-sitewatcher-native.ps1"
 $ServiceName = "SiteWatcherAgent"
+$DefaultServerUrl = "https://monitoring.talondns.com"
 
 function Require-Admin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -18,11 +19,51 @@ function Require-Admin {
     }
 }
 
+function Get-ConfiguredServerUrl {
+    $envFile = Join-Path $InstallPath '.env'
+    if (-not (Test-Path $envFile)) { return $null }
+    foreach ($line in Get-Content $envFile) {
+        if ($line -match '^\s*SITEWATCH_SERVER_URL\s*=\s*(.+?)\s*$') {
+            return $Matches[1].Trim().TrimEnd('/')
+        }
+    }
+    return $null
+}
+
+function Get-InstallerServerUrl {
+    param([bool]$IsNewInstall)
+
+    if ($IsNewInstall) { return $DefaultServerUrl }
+
+    $configured = Get-ConfiguredServerUrl
+    if (-not $configured) { return $DefaultServerUrl }
+
+    # Automatically move legacy Vercel-hosted SiteWatcher installs to the
+    # production VM. Custom/non-Vercel server URLs are preserved.
+    try {
+        $uri = [Uri]$configured
+        if ($uri.Host -like '*.vercel.app') {
+            Write-Host "Migrating SiteWatcher server URL:" -ForegroundColor Yellow
+            Write-Host "  $configured"
+            Write-Host "  -> $DefaultServerUrl" -ForegroundColor Green
+            return $DefaultServerUrl
+        }
+    } catch { }
+
+    return $null
+}
+
 function Invoke-LatestInstaller {
+    param([bool]$IsNewInstall = $false)
+
     $installer = Join-Path $env:TEMP ("install-sitewatcher-native-" + [guid]::NewGuid().ToString('N') + ".ps1")
     Invoke-WebRequest -Uri ($RepoInstaller + "?v=" + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) -OutFile $installer -UseBasicParsing
     try {
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -InstallPath $InstallPath
+        $serverUrl = Get-InstallerServerUrl -IsNewInstall $IsNewInstall
+        $installerArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$installer,'-InstallPath',$InstallPath)
+        if ($serverUrl) { $installerArgs += @('-ServerUrl',$serverUrl) }
+
+        & powershell.exe @installerArgs
         if ($LASTEXITCODE -ne 0) { throw "SiteWatcher installer failed with exit code $LASTEXITCODE." }
     } finally {
         Remove-Item $installer -Force -ErrorAction SilentlyContinue
@@ -35,7 +76,7 @@ $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 
 if (-not $service) {
     Write-Host "SiteWatcher Windows service is not installed. Installing it now..." -ForegroundColor Yellow
-    Invoke-LatestInstaller
+    Invoke-LatestInstaller -IsNewInstall $true
     exit 0
 }
 
@@ -51,7 +92,7 @@ switch ($Action) {
         Start-Service -Name $ServiceName
     }
     'Upgrade' {
-        Invoke-LatestInstaller
+        Invoke-LatestInstaller -IsNewInstall $false
         exit 0
     }
     'Status' { }
@@ -62,6 +103,7 @@ Write-Host "SiteWatcher Agent" -ForegroundColor Cyan
 Write-Host "Service name : $ServiceName"
 Write-Host "Status       : $($service.Status)" -ForegroundColor $(if ($service.Status -eq 'Running') {'Green'} else {'Yellow'})
 Write-Host "Install path : $InstallPath"
+Write-Host "Server URL   : $(Get-ConfiguredServerUrl)"
 Write-Host "Log          : $(Join-Path $InstallPath 'logs\agent.log')"
 Write-Host ""
 Write-Host "Commands:"
