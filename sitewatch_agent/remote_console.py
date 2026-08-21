@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+from datetime import datetime, timezone
 
 import requests
 
@@ -66,25 +67,68 @@ def _ps_quote(value: str) -> str:
     return value.replace("'", "''")
 
 
+def _install_root() -> str:
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+
+
+def _update_log_path() -> str:
+    log_dir = os.path.join(_install_root(), "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    return os.path.join(log_dir, "update.log")
+
+
+def _append_update_log(message: str):
+    try:
+        stamp = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+        with open(_update_log_path(), "a", encoding="utf-8", errors="replace") as handle:
+            handle.write(f"[{stamp}] {message}\n")
+    except Exception:
+        pass
+
+
 def _launch_self_update():
-    """Launch an updater outside the WinSW service process tree."""
+    """Launch an updater outside the WinSW service process tree and keep diagnostics."""
     installer_url = SERVER + "/downloads/sitewatcher-agent"
     task_name = "SiteWatcher-Agent-Update-" + uuid.uuid4().hex[:10]
     updater_path = os.path.join(tempfile.gettempdir(), task_name + ".ps1")
+    update_log = _update_log_path()
+
+    _append_update_log(f"remote update requested; task={task_name}; installer={installer_url}")
 
     updater_script = f"""$ErrorActionPreference = 'Stop'
+$Log = '{_ps_quote(update_log)}'
+function Write-UpdateLog([string]$Message) {{
+  $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff zzz'
+  Add-Content -LiteralPath $Log -Value "[$stamp] $Message" -Encoding UTF8
+}}
+Write-UpdateLog 'scheduled updater process started'
 Start-Sleep -Seconds 5
 $installer = Join-Path $env:TEMP 'install-sitewatcher-agent.ps1'
 try {{
+  Write-UpdateLog 'downloading installer'
   Invoke-WebRequest -Uri '{_ps_quote(installer_url)}' -OutFile $installer -UseBasicParsing
-  & $installer -ServerUrl '{_ps_quote(SERVER)}'
+  Write-UpdateLog "installer downloaded: $installer"
+  Write-UpdateLog 'starting installer child process'
+  $arguments = @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',$installer,'-ServerUrl','{_ps_quote(SERVER)}')
+  $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -Wait -PassThru -NoNewWindow -RedirectStandardOutput ($Log + '.stdout.tmp') -RedirectStandardError ($Log + '.stderr.tmp')
+  if (Test-Path ($Log + '.stdout.tmp')) {{ Get-Content ($Log + '.stdout.tmp') | Add-Content -LiteralPath $Log; Remove-Item ($Log + '.stdout.tmp') -Force -ErrorAction SilentlyContinue }}
+  if (Test-Path ($Log + '.stderr.tmp')) {{ Get-Content ($Log + '.stderr.tmp') | Add-Content -LiteralPath $Log; Remove-Item ($Log + '.stderr.tmp') -Force -ErrorAction SilentlyContinue }}
+  Write-UpdateLog "installer exited with code $($p.ExitCode)"
+  $versionFile = 'C:\SiteWatcher-Agent\sitewatch_agent\__init__.py'
+  if (Test-Path $versionFile) {{ Write-UpdateLog ('installed version file: ' + ((Get-Content $versionFile -Raw).Trim())) }}
+  $svc = Get-Service -Name 'SiteWatcherAgent' -ErrorAction SilentlyContinue
+  if ($svc) {{ Write-UpdateLog ('service status after installer: ' + $svc.Status) }} else {{ Write-UpdateLog 'service missing after installer' }}
+  if ($p.ExitCode -ne 0) {{ throw "Installer exited with code $($p.ExitCode)" }}
+}} catch {{
+  Write-UpdateLog ('ERROR: ' + ($_ | Out-String).Trim())
 }} finally {{
   try {{ Unregister-ScheduledTask -TaskName '{_ps_quote(task_name)}' -Confirm:$false -ErrorAction SilentlyContinue }} catch {{}}
-  try {{ Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue }} catch {{}}
+  Write-UpdateLog 'scheduled updater finished'
 }}
 """
     with open(updater_path, "w", encoding="utf-8-sig") as handle:
         handle.write(updater_script)
+    _append_update_log(f"updater script written to {updater_path}")
 
     register = f"""
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "{updater_path}"'
@@ -101,7 +145,10 @@ Start-ScheduledTask -TaskName '{task_name}'
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     if completed.returncode != 0:
-        raise RuntimeError((completed.stderr or completed.stdout or "Unable to create update task").strip())
+        detail = (completed.stderr or completed.stdout or "Unable to create update task").strip()
+        _append_update_log(f"ERROR creating scheduled task: {detail}")
+        raise RuntimeError(detail)
+    _append_update_log(f"scheduled task {task_name} registered and started")
 
 
 def _scan_host(ip: str):
@@ -174,7 +221,7 @@ def remote_console_loop():
                 print(f"[update] scheduling SiteWatcher self-update job id={command_id[:8]}", flush=True)
                 try:
                     _launch_self_update()
-                    _post_result(command_id, {"stdout":"SiteWatcher agent update scheduled as SYSTEM. The service will restart automatically.","stderr":"","exitCode":0})
+                    _post_result(command_id, {"stdout":"SiteWatcher agent update scheduled as SYSTEM. See logs/update.log for detailed progress.","stderr":"","exitCode":0})
                     print(f"[update] self-update task scheduled id={command_id[:8]}", flush=True)
                 except Exception as exc:
                     print(f"[update] unable to schedule update: {exc}", flush=True)
