@@ -9,7 +9,7 @@ import time
 import requests
 
 from .agent_logs import collect_agent_logs, create_agent_logs_zip
-from .rdp import disable_rdp, enable_rdp, get_rdp_status
+from .rdp import disable_rdp, enable_rdp, get_rdp_status, get_rdp_diagnostics, repair_rdp
 
 
 SERVER = os.environ["SITEWATCH_SERVER_URL"].rstrip("/")
@@ -22,6 +22,8 @@ LOG_BUNDLE_COMMAND = "__SITEWATCH_DOWNLOAD_LOGS__"
 RDP_STATUS_COMMAND = "__SITEWATCH_RDP_STATUS__"
 RDP_ENABLE_COMMAND = "__SITEWATCH_RDP_ENABLE__"
 RDP_DISABLE_COMMAND = "__SITEWATCH_RDP_DISABLE__"
+RDP_DIAGNOSTICS_COMMAND = "__SITEWATCH_RDP_DIAGNOSTICS__"
+RDP_REPAIR_COMMAND = "__SITEWATCH_RDP_REPAIR__"
 SCAN_PORTS = (22, 53, 80, 443, 554, 8000, 8080, 9000)
 
 BLOCKED_TOKENS = (";", "&&", "||", "|", ">", "<", "`", "$(", "@(")
@@ -57,14 +59,7 @@ def _run(command: str, shell: str, timeout_seconds: int = 60):
         "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command
     ]
     try:
-        completed = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=timeout_seconds,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        completed = subprocess.run(argv, capture_output=True, text=True, errors="replace", timeout=timeout_seconds, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         return {"stdout": (completed.stdout or "")[:200000], "stderr": (completed.stderr or "")[:200000], "exitCode": completed.returncode}
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
@@ -90,13 +85,7 @@ def _scan_host(ip: str):
     alive = bool(open_ports)
     if not alive:
         try:
-            ping = subprocess.run(
-                ["ping.exe", "-n", "1", "-w", "350", ip],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=1,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
+            ping = subprocess.run(["ping.exe", "-n", "1", "-w", "350", ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             alive = ping.returncode == 0
         except Exception:
             pass
@@ -137,12 +126,7 @@ def _upload_log_bundle(command_id: str) -> None:
     try:
         size = os.path.getsize(zip_path)
         with open(zip_path, "rb") as handle:
-            response = requests.post(
-                SERVER + f"/api/agent/log-bundles?id={command_id}",
-                headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/zip", "X-SiteWatcher-Log-Size": str(size)},
-                data=handle,
-                timeout=180,
-            )
+            response = requests.post(SERVER + f"/api/agent/log-bundles?id={command_id}", headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/zip", "X-SiteWatcher-Log-Size": str(size)}, data=handle, timeout=180)
         response.raise_for_status()
     finally:
         try:
@@ -158,6 +142,10 @@ def _handle_rdp(command: str) -> dict:
         result = enable_rdp()
     elif command == RDP_DISABLE_COMMAND:
         result = disable_rdp()
+    elif command == RDP_DIAGNOSTICS_COMMAND:
+        result = get_rdp_diagnostics()
+    elif command == RDP_REPAIR_COMMAND:
+        result = repair_rdp()
     else:
         raise ValueError("Unknown RDP maintenance command")
     return {"stdout": json.dumps(result), "stderr": "", "exitCode": 0}
@@ -194,7 +182,7 @@ def remote_console_loop():
                 time.sleep(10)
                 continue
 
-            if command in (RDP_STATUS_COMMAND, RDP_ENABLE_COMMAND, RDP_DISABLE_COMMAND) and shell == "system":
+            if command in (RDP_STATUS_COMMAND, RDP_ENABLE_COMMAND, RDP_DISABLE_COMMAND, RDP_DIAGNOSTICS_COMMAND, RDP_REPAIR_COMMAND) and shell == "system":
                 print(f"[rdp] maintenance command={command} job id={command_id[:8]}", flush=True)
                 try:
                     _post_result(command_id, _handle_rdp(command))
