@@ -10,12 +10,15 @@ import uuid
 
 import requests
 
+from .agent_logs import collect_agent_logs
+
 
 SERVER = os.environ["SITEWATCH_SERVER_URL"].rstrip("/")
 TOKEN = os.environ["SITEWATCH_AGENT_TOKEN"]
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 UPDATE_COMMAND = "__SITEWATCH_UPDATE_AGENT__"
 SCAN_PREFIX = "__SITEWATCH_IP_SCAN__|"
+LOG_PREFIX = "__SITEWATCH_GET_LOGS__|"
 SCAN_PORTS = (22, 53, 80, 443, 554, 8000, 8080, 9000)
 
 BLOCKED_TOKENS = (";", "&&", "||", "|", ">", "<", "`", "$(", "@(")
@@ -64,12 +67,7 @@ def _ps_quote(value: str) -> str:
 
 
 def _launch_self_update():
-    """Launch an updater outside the WinSW service process tree.
-
-    A child process of the service can be terminated when WinSW stops the
-    service during reinstall. A one-shot SYSTEM scheduled task survives that
-    stop/replacement and can finish the upgrade safely.
-    """
+    """Launch an updater outside the WinSW service process tree."""
     installer_url = SERVER + "/downloads/sitewatcher-agent"
     task_name = "SiteWatcher-Agent-Update-" + uuid.uuid4().hex[:10]
     updater_path = os.path.join(tempfile.gettempdir(), task_name + ".ps1")
@@ -182,6 +180,21 @@ def remote_console_loop():
                     print(f"[update] unable to schedule update: {exc}", flush=True)
                     _post_result(command_id, {"stdout":"","stderr":f"Unable to schedule SiteWatcher update: {exc}","exitCode":1})
                 time.sleep(10)
+                continue
+
+            if command.startswith(LOG_PREFIX) and shell == "system":
+                raw_lines = command[len(LOG_PREFIX):].strip()
+                try:
+                    lines = max(50, min(1000, int(raw_lines or "250")))
+                except ValueError:
+                    lines = 250
+                print(f"[logs] collecting recent agent logs lines={lines} job id={command_id[:8]}", flush=True)
+                try:
+                    output = collect_agent_logs(lines)
+                    _post_result(command_id, {"stdout":output,"stderr":"","exitCode":0})
+                    print(f"[logs] collection completed id={command_id[:8]}", flush=True)
+                except Exception as exc:
+                    _post_result(command_id, {"stdout":"","stderr":f"Unable to collect agent logs: {exc}","exitCode":1})
                 continue
 
             if command.startswith(SCAN_PREFIX) and shell == "system":
