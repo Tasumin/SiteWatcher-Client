@@ -6,7 +6,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$InstallerBuild = "0.9.11-latest-package"
+$InstallerBuild = "0.9.12-latest-package"
 $TaskName = "SiteWatcher Agent"
 $ServiceName = "SiteWatcherAgent"
 $WinSwUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET4.exe"
@@ -119,8 +119,6 @@ try {
     Write-Step "Installing latest agent files"
     New-Item -ItemType Directory -Force -Path $InstallPath | Out-Null
 
-    # Preserve runtime/configuration assets that are machine-specific or large.
-    # Application source and scripts are replaced from the current GitHub package.
     $preserve = @('.env','logs','data','.venv','bin','SiteWatcherAgent.exe','SiteWatcherAgent.xml')
     Get-ChildItem -LiteralPath $InstallPath -Force -ErrorAction SilentlyContinue |
         Where-Object { $preserve -notcontains $_.Name } |
