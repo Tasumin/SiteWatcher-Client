@@ -6,7 +6,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$InstallerBuild = "0.9.24-tightvnc-package"
+$InstallerBuild = "0.9.25-tightvnc-fix"
 $TaskName = "SiteWatcher Agent"
 $ServiceName = "SiteWatcherAgent"
 $WinSwUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET4.exe"
