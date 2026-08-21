@@ -88,23 +88,28 @@ def _append_update_log(message: str):
 
 
 def _launch_self_update():
-    """Launch the updater as a SYSTEM scheduled task with robust diagnostics."""
+    """Launch the updater as a SYSTEM scheduled task and verify that it starts."""
     installer_url = SERVER + "/downloads/sitewatcher-agent"
     task_name = "SiteWatcher-Agent-Update-" + uuid.uuid4().hex[:10]
     update_log = _update_log_path()
 
     _append_update_log(f"remote update requested; task={task_name}; installer={installer_url}")
 
-    # Use -EncodedCommand instead of Task Scheduler's -File quoting.  The old
-    # action could report 0x0 even though the updater .ps1 never executed.
     updater_script = f"""$ErrorActionPreference = 'Stop'
 $Log = '{_ps_quote(update_log)}'
 function Write-UpdateLog([string]$Message) {{
   $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff zzz'
-  Add-Content -LiteralPath $Log -Value "[$stamp] $Message" -Encoding UTF8
+  for ($attempt = 0; $attempt -lt 10; $attempt++) {{
+    try {{
+      Add-Content -LiteralPath $Log -Value "[$stamp] $Message" -Encoding UTF8 -ErrorAction Stop
+      return
+    }} catch [System.IO.IOException] {{
+      Start-Sleep -Milliseconds 250
+    }}
+  }}
 }}
 Write-UpdateLog 'scheduled updater process started'
-Start-Sleep -Seconds 5
+Start-Sleep -Seconds 3
 $installer = Join-Path $env:TEMP 'install-sitewatcher-agent.ps1'
 try {{
   Write-UpdateLog 'downloading installer'
@@ -113,12 +118,12 @@ try {{
   $installerBuild = (Select-String -Path $installer -Pattern '\\$InstallerBuild\\s*=\\s*[\"'']([^\"'']+)' -ErrorAction SilentlyContinue).Matches.Groups[1].Value
   if ($installerBuild) {{ Write-UpdateLog ('installer build: ' + $installerBuild) }}
   Write-UpdateLog 'starting installer child process'
-  $stdout = $Log + '.stdout.tmp'
-  $stderr = $Log + '.stderr.tmp'
+  $stdout = Join-Path $env:TEMP ('sitewatcher-update-' + [guid]::NewGuid().ToString('N') + '.out')
+  $stderr = Join-Path $env:TEMP ('sitewatcher-update-' + [guid]::NewGuid().ToString('N') + '.err')
   $arguments = @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',$installer,'-ServerUrl','{_ps_quote(SERVER)}')
   $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-  if (Test-Path $stdout) {{ Get-Content $stdout | Add-Content -LiteralPath $Log; Remove-Item $stdout -Force -ErrorAction SilentlyContinue }}
-  if (Test-Path $stderr) {{ Get-Content $stderr | Add-Content -LiteralPath $Log; Remove-Item $stderr -Force -ErrorAction SilentlyContinue }}
+  if (Test-Path $stdout) {{ Get-Content $stdout | ForEach-Object {{ Write-UpdateLog ('installer: ' + $_) }}; Remove-Item $stdout -Force -ErrorAction SilentlyContinue }}
+  if (Test-Path $stderr) {{ Get-Content $stderr | ForEach-Object {{ Write-UpdateLog ('installer-error: ' + $_) }}; Remove-Item $stderr -Force -ErrorAction SilentlyContinue }}
   Write-UpdateLog "installer exited with code $($p.ExitCode)"
   $versionFile = 'C:\\SiteWatcher-Agent\\sitewatch_agent\\__init__.py'
   if (Test-Path $versionFile) {{ Write-UpdateLog ('installed version file: ' + ((Get-Content $versionFile -Raw).Trim())) }}
@@ -135,14 +140,27 @@ try {{
     encoded = base64.b64encode(updater_script.encode("utf-16le")).decode("ascii")
     _append_update_log(f"updater command encoded; chars={len(encoded)}")
 
-    # A tiny cmd wrapper captures PowerShell startup/parser failures too. This
-    # means update.log gets useful output even if the encoded command cannot run.
-    task_arguments = f'/d /s /c "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded} >> \"{update_log}\" 2>&1"'
+    # Run PowerShell directly.  Do not redirect the whole task process to
+    # update.log: cmd.exe keeps that file handle open for the lifetime of the
+    # updater, which prevents Add-Content inside the updater from writing it.
     register = f"""
-$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '{_ps_quote(task_arguments)}'
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded}'
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 Register-ScheduledTask -TaskName '{task_name}' -Action $action -Principal $principal -Force | Out-Null
+$before = Get-ScheduledTaskInfo -TaskName '{task_name}'
 Start-ScheduledTask -TaskName '{task_name}'
+$started = $false
+$state = ''
+$lastRun = $before.LastRunTime
+for ($i = 0; $i -lt 20; $i++) {{
+  Start-Sleep -Milliseconds 250
+  $task = Get-ScheduledTask -TaskName '{task_name}' -ErrorAction SilentlyContinue
+  $info = Get-ScheduledTaskInfo -TaskName '{task_name}' -ErrorAction SilentlyContinue
+  if ($task) {{ $state = [string]$task.State }}
+  if ($task -and ($task.State -eq 'Running' -or ($info -and $info.LastRunTime -gt $lastRun))) {{ $started = $true; break }}
+}}
+if (-not $started) {{ throw "Scheduled update task did not start; state=$state" }}
+Write-Output "started state=$state"
 """
     completed = subprocess.run(
         ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", register],
@@ -152,11 +170,12 @@ Start-ScheduledTask -TaskName '{task_name}'
         timeout=30,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
+    detail = ((completed.stdout or "") + " " + (completed.stderr or "")).strip()
     if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "Unable to create update task").strip()
-        _append_update_log(f"ERROR creating scheduled task: {detail}")
+        detail = detail or "Unable to create/start update task"
+        _append_update_log(f"ERROR creating or starting scheduled task: {detail}")
         raise RuntimeError(detail)
-    _append_update_log(f"scheduled task {task_name} registered and started")
+    _append_update_log(f"scheduled task {task_name} verified started; {detail or 'running'}")
 
 
 def _scan_host(ip: str):
@@ -229,11 +248,11 @@ def remote_console_loop():
                 print(f"[update] scheduling SiteWatcher self-update job id={command_id[:8]}", flush=True)
                 try:
                     _launch_self_update()
-                    _post_result(command_id, {"stdout":"SiteWatcher agent update scheduled as SYSTEM. See logs/update.log for detailed progress.","stderr":"","exitCode":0})
-                    print(f"[update] self-update task scheduled id={command_id[:8]}", flush=True)
+                    _post_result(command_id, {"stdout":"SiteWatcher agent update task started as SYSTEM. See logs/update.log for detailed progress.","stderr":"","exitCode":0})
+                    print(f"[update] self-update task started id={command_id[:8]}", flush=True)
                 except Exception as exc:
-                    print(f"[update] unable to schedule update: {exc}", flush=True)
-                    _post_result(command_id, {"stdout":"","stderr":f"Unable to schedule SiteWatcher update: {exc}","exitCode":1})
+                    print(f"[update] unable to start update: {exc}", flush=True)
+                    _post_result(command_id, {"stdout":"","stderr":f"Unable to start SiteWatcher update: {exc}","exitCode":1})
                 time.sleep(10)
                 continue
 
