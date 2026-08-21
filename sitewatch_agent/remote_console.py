@@ -9,6 +9,7 @@ import time
 import requests
 
 from .agent_logs import collect_agent_logs, create_agent_logs_zip
+from .rdp import disable_rdp, enable_rdp, get_rdp_status
 
 
 SERVER = os.environ["SITEWATCH_SERVER_URL"].rstrip("/")
@@ -18,6 +19,9 @@ UPDATE_COMMAND = "__SITEWATCH_UPDATE_AGENT__"
 SCAN_PREFIX = "__SITEWATCH_IP_SCAN__|"
 LOG_PREFIX = "__SITEWATCH_GET_LOGS__|"
 LOG_BUNDLE_COMMAND = "__SITEWATCH_DOWNLOAD_LOGS__"
+RDP_STATUS_COMMAND = "__SITEWATCH_RDP_STATUS__"
+RDP_ENABLE_COMMAND = "__SITEWATCH_RDP_ENABLE__"
+RDP_DISABLE_COMMAND = "__SITEWATCH_RDP_DISABLE__"
 SCAN_PORTS = (22, 53, 80, 443, 554, 8000, 8080, 9000)
 
 BLOCKED_TOKENS = (";", "&&", "||", "|", ">", "<", "`", "$(", "@(")
@@ -71,8 +75,6 @@ def _run(command: str, shell: str, timeout_seconds: int = 60):
 
 
 def _launch_self_update():
-    # service_entry replaces this with the hardened launcher. This fallback keeps
-    # direct module execution functional too.
     from .update_launcher import launch_self_update
     return launch_self_update()
 
@@ -149,6 +151,18 @@ def _upload_log_bundle(command_id: str) -> None:
             pass
 
 
+def _handle_rdp(command: str) -> dict:
+    if command == RDP_STATUS_COMMAND:
+        result = get_rdp_status()
+    elif command == RDP_ENABLE_COMMAND:
+        result = enable_rdp()
+    elif command == RDP_DISABLE_COMMAND:
+        result = disable_rdp()
+    else:
+        raise ValueError("Unknown RDP maintenance command")
+    return {"stdout": json.dumps(result), "stderr": "", "exitCode": 0}
+
+
 def remote_console_loop():
     time.sleep(3)
     while True:
@@ -178,6 +192,14 @@ def remote_console_loop():
                     print(f"[update] unable to start update: {exc}", flush=True)
                     _post_result(command_id, {"stdout": "", "stderr": f"Unable to start SiteWatcher update: {exc}", "exitCode": 1})
                 time.sleep(10)
+                continue
+
+            if command in (RDP_STATUS_COMMAND, RDP_ENABLE_COMMAND, RDP_DISABLE_COMMAND) and shell == "system":
+                print(f"[rdp] maintenance command={command} job id={command_id[:8]}", flush=True)
+                try:
+                    _post_result(command_id, _handle_rdp(command))
+                except Exception as exc:
+                    _post_result(command_id, {"stdout": "", "stderr": f"RDP operation failed: {exc}", "exitCode": 1})
                 continue
 
             if command == LOG_BUNDLE_COMMAND and shell == "system":
