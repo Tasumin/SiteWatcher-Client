@@ -6,7 +6,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$InstallerBuild = "0.9.12-latest-package"
+$InstallerBuild = "0.9.13-latest-package"
 $TaskName = "SiteWatcher Agent"
 $ServiceName = "SiteWatcherAgent"
 $WinSwUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET4.exe"
@@ -75,7 +75,6 @@ $RepoZip=Join-Path $env:TEMP "sitewatcher-client-main.zip"; $ExtractRoot=Join-Pa
 $ExistingEnvFile=Join-Path $InstallPath '.env'; $IsUpgrade=Test-Path $ExistingEnvFile; $EnvBackup=$null
 
 try {
-    # CRITICAL: upgrades preserve the .env byte-for-byte. The installer must never regenerate it.
     if ($IsUpgrade) {
         $EnvBackup=Join-Path $env:TEMP ("sitewatcher-env-"+[guid]::NewGuid().ToString('N')+".bak")
         Copy-Item -LiteralPath $ExistingEnvFile -Destination $EnvBackup -Force
@@ -90,7 +89,6 @@ try {
     $ExistingEnv=@{}
     if($IsUpgrade){ foreach($line in Get-Content $ExistingEnvFile){if($line -match '^\s*([^#][^=]*)=(.*)$'){$ExistingEnv[$matches[1].Trim()]=$matches[2].Trim()}} }
     if($IsUpgrade){
-        # For upgrades the existing file is authoritative; command-line defaults must not replace its values.
         $ServerUrl=Get-OrDefault $ExistingEnv 'SITEWATCH_SERVER_URL' $ServerUrl
         $AgentToken=Get-OrDefault $ExistingEnv 'SITEWATCH_AGENT_TOKEN' $AgentToken
         $DiscoveryCidrs=Get-OrDefault $ExistingEnv 'SITEWATCH_DISCOVERY_CIDRS' (Get-OrDefault $ExistingEnv 'DISCOVERY_CIDRS' $DiscoveryCidrs)
@@ -103,7 +101,6 @@ try {
     Get-ChildItem $InstallPath -Force -ErrorAction SilentlyContinue|Where-Object{$preserve -notcontains $_.Name}|Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     Get-ChildItem $RepoRoot -Force|ForEach-Object{if($preserve -contains $_.Name){return};$dest=Join-Path $InstallPath $_.Name;if(Test-Path $dest){Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue};Copy-Item $_.FullName $dest -Recurse -Force}
 
-    # Restore immediately after application-file copy as an additional guard.
     if($IsUpgrade -and $EnvBackup){Copy-Item -LiteralPath $EnvBackup -Destination $ExistingEnvFile -Force}
 
     $Python=$null; foreach($candidate in @('py.exe','python.exe')){try{if($candidate -eq 'py.exe'){& $candidate -3 --version *> $null;if($LASTEXITCODE -eq 0){$Python=@($candidate,'-3');break}}else{& $candidate --version *> $null;if($LASTEXITCODE -eq 0){$Python=@($candidate);break}}}catch{}}
@@ -113,11 +110,9 @@ try {
     $BinDir=Ensure-Ffmpeg
 
     if(-not $IsUpgrade){
-        # Only a brand-new install creates .env.
         $envLines=@("SITEWATCH_SERVER_URL=$($ServerUrl.TrimEnd('/'))","SITEWATCH_AGENT_TOKEN=$AgentToken");if($DiscoveryCidrs){$envLines+="SITEWATCH_DISCOVERY_CIDRS=$DiscoveryCidrs"};$envLines+="SITEWATCH_FFMPEG_DIR=$BinDir"
         Set-Content -LiteralPath $ExistingEnvFile -Value $envLines -Encoding ASCII
     } else {
-        # Verify/restore once more before service start. Do not append, normalize, or rewrite anything.
         Copy-Item -LiteralPath $EnvBackup -Destination $ExistingEnvFile -Force
     }
 
@@ -127,7 +122,6 @@ try {
     Write-Host "`nService: SiteWatcher Agent ($ServiceName)" -ForegroundColor Green;Write-Host "Status: $($installedService.Status)";Write-Host "Agent version: $version";Write-Host "Existing configuration preserved: $IsUpgrade";Write-Host "SiteWatcher native Windows service installed/upgraded successfully." -ForegroundColor Green
 }
 catch {
-    # Even a failed upgrade restores the original configuration before service recovery.
     if($IsUpgrade -and $EnvBackup -and (Test-Path $EnvBackup)){Copy-Item -LiteralPath $EnvBackup -Destination $ExistingEnvFile -Force -ErrorAction SilentlyContinue}
     Try-RecoverService; throw
 }
