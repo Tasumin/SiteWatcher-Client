@@ -1,3 +1,4 @@
+import base64
 import concurrent.futures
 import ipaddress
 import json
@@ -87,14 +88,15 @@ def _append_update_log(message: str):
 
 
 def _launch_self_update():
-    """Launch an updater outside the WinSW service process tree and keep diagnostics."""
+    """Launch the updater as a SYSTEM scheduled task with robust diagnostics."""
     installer_url = SERVER + "/downloads/sitewatcher-agent"
     task_name = "SiteWatcher-Agent-Update-" + uuid.uuid4().hex[:10]
-    updater_path = os.path.join(tempfile.gettempdir(), task_name + ".ps1")
     update_log = _update_log_path()
 
     _append_update_log(f"remote update requested; task={task_name}; installer={installer_url}")
 
+    # Use -EncodedCommand instead of Task Scheduler's -File quoting.  The old
+    # action could report 0x0 even though the updater .ps1 never executed.
     updater_script = f"""$ErrorActionPreference = 'Stop'
 $Log = '{_ps_quote(update_log)}'
 function Write-UpdateLog([string]$Message) {{
@@ -108,13 +110,17 @@ try {{
   Write-UpdateLog 'downloading installer'
   Invoke-WebRequest -Uri '{_ps_quote(installer_url)}' -OutFile $installer -UseBasicParsing
   Write-UpdateLog "installer downloaded: $installer"
+  $installerBuild = (Select-String -Path $installer -Pattern '\\$InstallerBuild\\s*=\\s*[\"'']([^\"'']+)' -ErrorAction SilentlyContinue).Matches.Groups[1].Value
+  if ($installerBuild) {{ Write-UpdateLog ('installer build: ' + $installerBuild) }}
   Write-UpdateLog 'starting installer child process'
+  $stdout = $Log + '.stdout.tmp'
+  $stderr = $Log + '.stderr.tmp'
   $arguments = @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',$installer,'-ServerUrl','{_ps_quote(SERVER)}')
-  $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -Wait -PassThru -NoNewWindow -RedirectStandardOutput ($Log + '.stdout.tmp') -RedirectStandardError ($Log + '.stderr.tmp')
-  if (Test-Path ($Log + '.stdout.tmp')) {{ Get-Content ($Log + '.stdout.tmp') | Add-Content -LiteralPath $Log; Remove-Item ($Log + '.stdout.tmp') -Force -ErrorAction SilentlyContinue }}
-  if (Test-Path ($Log + '.stderr.tmp')) {{ Get-Content ($Log + '.stderr.tmp') | Add-Content -LiteralPath $Log; Remove-Item ($Log + '.stderr.tmp') -Force -ErrorAction SilentlyContinue }}
+  $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+  if (Test-Path $stdout) {{ Get-Content $stdout | Add-Content -LiteralPath $Log; Remove-Item $stdout -Force -ErrorAction SilentlyContinue }}
+  if (Test-Path $stderr) {{ Get-Content $stderr | Add-Content -LiteralPath $Log; Remove-Item $stderr -Force -ErrorAction SilentlyContinue }}
   Write-UpdateLog "installer exited with code $($p.ExitCode)"
-  $versionFile = 'C:\SiteWatcher-Agent\sitewatch_agent\__init__.py'
+  $versionFile = 'C:\\SiteWatcher-Agent\\sitewatch_agent\\__init__.py'
   if (Test-Path $versionFile) {{ Write-UpdateLog ('installed version file: ' + ((Get-Content $versionFile -Raw).Trim())) }}
   $svc = Get-Service -Name 'SiteWatcherAgent' -ErrorAction SilentlyContinue
   if ($svc) {{ Write-UpdateLog ('service status after installer: ' + $svc.Status) }} else {{ Write-UpdateLog 'service missing after installer' }}
@@ -122,16 +128,18 @@ try {{
 }} catch {{
   Write-UpdateLog ('ERROR: ' + ($_ | Out-String).Trim())
 }} finally {{
-  try {{ Unregister-ScheduledTask -TaskName '{_ps_quote(task_name)}' -Confirm:$false -ErrorAction SilentlyContinue }} catch {{}}
   Write-UpdateLog 'scheduled updater finished'
+  try {{ Unregister-ScheduledTask -TaskName '{_ps_quote(task_name)}' -Confirm:$false -ErrorAction SilentlyContinue }} catch {{}}
 }}
 """
-    with open(updater_path, "w", encoding="utf-8-sig") as handle:
-        handle.write(updater_script)
-    _append_update_log(f"updater script written to {updater_path}")
+    encoded = base64.b64encode(updater_script.encode("utf-16le")).decode("ascii")
+    _append_update_log(f"updater command encoded; chars={len(encoded)}")
 
+    # A tiny cmd wrapper captures PowerShell startup/parser failures too. This
+    # means update.log gets useful output even if the encoded command cannot run.
+    task_arguments = f'/d /s /c "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded} >> \"{update_log}\" 2>&1"'
     register = f"""
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "{updater_path}"'
+$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '{_ps_quote(task_arguments)}'
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 Register-ScheduledTask -TaskName '{task_name}' -Action $action -Principal $principal -Force | Out-Null
 Start-ScheduledTask -TaskName '{task_name}'
