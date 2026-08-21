@@ -1,6 +1,6 @@
-import base64
 import os
 import subprocess
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -30,14 +30,18 @@ def _ps_quote(value: str) -> str:
     return value.replace("'", "''")
 
 
-def launch_self_update() -> None:
-    installer_url = SERVER + "/downloads/sitewatcher-agent"
-    task_name = "SiteWatcher-Agent-Update-" + uuid.uuid4().hex[:10]
-    update_log = _update_log_path()
-    _append(f"remote update requested; task={task_name}; installer={installer_url}")
+def _task_started_marker(task_name: str) -> str:
+    return f"scheduled updater process started task={task_name}"
+
+
+def _write_updater_script(task_name: str, installer_url: str, update_log: str) -> str:
+    update_root = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "SiteWatcher", "updates")
+    os.makedirs(update_root, exist_ok=True)
+    updater_path = os.path.join(update_root, f"{task_name}.ps1")
 
     updater_script = f"""$ErrorActionPreference = 'Stop'
 $Log = '{_ps_quote(update_log)}'
+$UpdaterScript = '{_ps_quote(updater_path)}'
 function Write-UpdateLog([string]$Message) {{
   $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff zzz'
   for ($attempt = 0; $attempt -lt 10; $attempt++) {{
@@ -45,8 +49,8 @@ function Write-UpdateLog([string]$Message) {{
     catch [System.IO.IOException] {{ Start-Sleep -Milliseconds 250 }}
   }}
 }}
-Write-UpdateLog 'scheduled updater process started'
-Start-Sleep -Seconds 3
+Write-UpdateLog '{_ps_quote(_task_started_marker(task_name))}'
+Start-Sleep -Seconds 2
 $installer = Join-Path $env:TEMP 'install-sitewatcher-agent.ps1'
 try {{
   Write-UpdateLog 'downloading installer'
@@ -65,57 +69,111 @@ try {{
   $versionFile = 'C:\\SiteWatcher-Agent\\sitewatch_agent\\__init__.py'
   if (Test-Path $versionFile) {{ Write-UpdateLog ('installed version file: ' + ((Get-Content $versionFile -Raw).Trim())) }}
   $svc = Get-Service -Name 'SiteWatcherAgent' -ErrorAction SilentlyContinue
-  if ($svc) {{ Write-UpdateLog ('service status after installer: ' + $svc.Status) }}
+  if ($svc) {{ Write-UpdateLog ('service status after installer: ' + $svc.Status) }} else {{ Write-UpdateLog 'service missing after installer' }}
   if ($p.ExitCode -ne 0) {{ throw "Installer exited with code $($p.ExitCode)" }}
 }} catch {{
   Write-UpdateLog ('ERROR: ' + ($_ | Out-String).Trim())
 }} finally {{
   Write-UpdateLog 'scheduled updater finished'
   try {{ Unregister-ScheduledTask -TaskName '{_ps_quote(task_name)}' -Confirm:$false -ErrorAction SilentlyContinue }} catch {{}}
+  try {{ Remove-Item -LiteralPath $UpdaterScript -Force -ErrorAction SilentlyContinue }} catch {{}}
 }}
 """
-    encoded = base64.b64encode(updater_script.encode("utf-16le")).decode("ascii")
-    _append(f"updater command encoded; chars={len(encoded)}")
+    with open(updater_path, "w", encoding="utf-8-sig", newline="\r\n") as handle:
+        handle.write(updater_script)
+    return updater_path
+
+
+def _read_update_log() -> str:
+    try:
+        with open(_update_log_path(), "r", encoding="utf-8", errors="replace") as handle:
+            return handle.read()[-100000:]
+    except Exception:
+        return ""
+
+
+def launch_self_update() -> None:
+    installer_url = SERVER + "/downloads/sitewatcher-agent"
+    task_name = "SiteWatcher-Agent-Update-" + uuid.uuid4().hex[:10]
+    update_log = _update_log_path()
+    marker = _task_started_marker(task_name)
+    _append(f"remote update requested; task={task_name}; installer={installer_url}")
+
+    updater_path = _write_updater_script(task_name, installer_url, update_log)
+    _append(f"updater script written: {updater_path}")
 
     register = f"""
 $ErrorActionPreference = 'Stop'
-$taskName = '{task_name}'
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded}'
+$taskName = '{_ps_quote(task_name)}'
+$scriptPath = '{_ps_quote(updater_path)}'
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $scriptPath + '"')
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances Parallel -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
 Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings -Force | Out-Null
-Start-ScheduledTask -TaskName $taskName
-$running = $false
-$state = ''
-for ($i = 0; $i -lt 20; $i++) {{
-  Start-Sleep -Milliseconds 250
-  $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-  if ($task) {{ $state = [string]$task.State }}
-  if ($state -eq 'Running') {{ $running = $true; break }}
-}}
-if (-not $running) {{
-  $fallback = & schtasks.exe /Run /TN $taskName 2>&1
-  Start-Sleep -Milliseconds 750
-  $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-  if ($task) {{ $state = [string]$task.State }}
-  if ($state -ne 'Running') {{
-    $info = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
-    $result = if ($info) {{ $info.LastTaskResult }} else {{ 'unknown' }}
-    throw "Scheduled update task failed to enter Running state; state=$state; lastResult=$result; fallback=$fallback"
-  }}
-}}
-Write-Output "started state=Running"
+Write-Output 'registered'
 """
-    completed = subprocess.run(
-        ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", register],
-        capture_output=True,
-        text=True,
-        errors="replace",
-        timeout=30,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    detail = ((completed.stdout or "") + " " + (completed.stderr or "")).strip()
-    if completed.returncode != 0:
-        _append(f"ERROR creating or starting scheduled task: {detail or 'unknown error'}")
-        raise RuntimeError(detail or "Unable to create/start update task")
-    _append(f"scheduled task {task_name} verified started; {detail or 'state=Running'}")
+    try:
+        registered = subprocess.run(
+            ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", register],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Timed out while registering SiteWatcher update task") from exc
+
+    detail = ((registered.stdout or "") + " " + (registered.stderr or "")).strip()
+    if registered.returncode != 0:
+        _append(f"ERROR registering scheduled task: {detail or 'unknown error'}")
+        raise RuntimeError(detail or "Unable to register update task")
+    _append(f"scheduled task registered: {task_name}")
+
+    try:
+        started = subprocess.run(
+            ["schtasks.exe", "/Run", "/TN", task_name],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Timed out while requesting SiteWatcher update task start") from exc
+
+    start_detail = ((started.stdout or "") + " " + (started.stderr or "")).strip()
+    if started.returncode != 0:
+        _append(f"ERROR starting scheduled task: {start_detail or 'unknown error'}")
+        raise RuntimeError(start_detail or "Unable to start update task")
+    _append(f"scheduled task run requested: {start_detail or task_name}")
+
+    # Verify actual script execution rather than trusting the transient Task Scheduler state.
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        if marker in _read_update_log():
+            _append(f"scheduled updater execution verified: task={task_name}")
+            return
+        time.sleep(0.25)
+
+    diagnostic = f"""
+$task = Get-ScheduledTask -TaskName '{_ps_quote(task_name)}' -ErrorAction SilentlyContinue
+$info = Get-ScheduledTaskInfo -TaskName '{_ps_quote(task_name)}' -ErrorAction SilentlyContinue
+if ($task) {{ Write-Output ('state=' + [string]$task.State) }} else {{ Write-Output 'state=missing' }}
+if ($info) {{ Write-Output ('lastResult=' + [string]$info.LastTaskResult); Write-Output ('lastRun=' + [string]$info.LastRunTime) }}
+"""
+    try:
+        diag = subprocess.run(
+            ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", diagnostic],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        diag_detail = ((diag.stdout or "") + " " + (diag.stderr or "")).strip()
+    except Exception as exc:
+        diag_detail = str(exc)
+
+    _append(f"ERROR updater did not execute within verification window: {diag_detail}")
+    raise RuntimeError(f"Update task was requested but updater did not execute. {diag_detail}".strip())
