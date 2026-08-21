@@ -33,10 +33,15 @@ def main() -> None:
     # Import only after .env is loaded because workers read configuration
     # from environment variables at import time.
     from .main import main as agent_main
-    from .remote_console import remote_console_loop
+    from . import remote_console
+    from .update_launcher import launch_self_update
+
+    # Use the hardened launcher for maintenance jobs. Keeping it separate from
+    # the console worker makes update behavior easier to test and change safely.
+    remote_console._launch_self_update = launch_self_update
 
     console_thread = threading.Thread(
-        target=remote_console_loop,
+        target=remote_console.remote_console_loop,
         name="sitewatch-remote-console",
         daemon=True,
     )
