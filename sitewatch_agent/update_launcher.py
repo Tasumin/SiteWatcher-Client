@@ -30,14 +30,14 @@ def _ps_quote(value: str) -> str:
     return value.replace("'", "''")
 
 
-def _task_started_marker(task_name: str) -> str:
-    return f"scheduled updater process started task={task_name}"
+def _started_marker(update_id: str) -> str:
+    return f"detached updater process started id={update_id}"
 
 
-def _write_updater_script(task_name: str, installer_url: str, update_log: str) -> str:
+def _write_updater_script(update_id: str, installer_url: str, update_log: str) -> str:
     update_root = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "SiteWatcher", "updates")
     os.makedirs(update_root, exist_ok=True)
-    updater_path = os.path.join(update_root, f"{task_name}.ps1")
+    updater_path = os.path.join(update_root, f"SiteWatcher-Agent-Update-{update_id}.ps1")
 
     updater_script = f"""$ErrorActionPreference = 'Stop'
 $Log = '{_ps_quote(update_log)}'
@@ -49,7 +49,7 @@ function Write-UpdateLog([string]$Message) {{
     catch [System.IO.IOException] {{ Start-Sleep -Milliseconds 250 }}
   }}
 }}
-Write-UpdateLog '{_ps_quote(_task_started_marker(task_name))}'
+Write-UpdateLog '{_ps_quote(_started_marker(update_id))}'
 Start-Sleep -Seconds 2
 $installer = Join-Path $env:TEMP 'install-sitewatcher-agent.ps1'
 try {{
@@ -74,8 +74,7 @@ try {{
 }} catch {{
   Write-UpdateLog ('ERROR: ' + ($_ | Out-String).Trim())
 }} finally {{
-  Write-UpdateLog 'scheduled updater finished'
-  try {{ Unregister-ScheduledTask -TaskName '{_ps_quote(task_name)}' -Confirm:$false -ErrorAction SilentlyContinue }} catch {{}}
+  Write-UpdateLog 'detached updater finished'
   try {{ Remove-Item -LiteralPath $UpdaterScript -Force -ErrorAction SilentlyContinue }} catch {{}}
 }}
 """
@@ -93,28 +92,32 @@ def _read_update_log() -> str:
 
 
 def launch_self_update() -> None:
+    """Launch the updater outside the WinSW service process tree via WMI/CIM."""
     installer_url = SERVER + "/downloads/sitewatcher-agent"
-    task_name = "SiteWatcher-Agent-Update-" + uuid.uuid4().hex[:10]
+    update_id = uuid.uuid4().hex[:10]
     update_log = _update_log_path()
-    marker = _task_started_marker(task_name)
-    _append(f"remote update requested; task={task_name}; installer={installer_url}")
+    marker = _started_marker(update_id)
+    _append(f"remote update requested; id={update_id}; installer={installer_url}")
 
-    updater_path = _write_updater_script(task_name, installer_url, update_log)
+    updater_path = _write_updater_script(update_id, installer_url, update_log)
     _append(f"updater script written: {updater_path}")
 
-    register = f"""
+    # Win32_Process.Create is executed by the Windows WMI provider. Because the
+    # SiteWatcher service runs as SYSTEM, the created process also runs as SYSTEM,
+    # but it is not a child of the WinSW-managed SiteWatcher service process tree.
+    # This lets the updater survive when the installer stops/replaces SiteWatcher.
+    launch = f"""
 $ErrorActionPreference = 'Stop'
-$taskName = '{_ps_quote(task_name)}'
 $scriptPath = '{_ps_quote(updater_path)}'
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $scriptPath + '"')
-$principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances Parallel -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
-Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings -Force | Out-Null
-Write-Output 'registered'
+$commandLine = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $scriptPath + '"'
+$result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{{ CommandLine = $commandLine }}
+if (-not $result) {{ throw 'Win32_Process.Create returned no result' }}
+if ([int]$result.ReturnValue -ne 0) {{ throw ('Win32_Process.Create failed with return value ' + $result.ReturnValue) }}
+Write-Output ('created pid=' + $result.ProcessId)
 """
     try:
-        registered = subprocess.run(
-            ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", register],
+        created = subprocess.run(
+            ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", launch],
             capture_output=True,
             text=True,
             errors="replace",
@@ -122,58 +125,23 @@ Write-Output 'registered'
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("Timed out while registering SiteWatcher update task") from exc
+        _append("ERROR WMI launcher timed out")
+        raise RuntimeError("Timed out while creating detached SiteWatcher updater process") from exc
 
-    detail = ((registered.stdout or "") + " " + (registered.stderr or "")).strip()
-    if registered.returncode != 0:
-        _append(f"ERROR registering scheduled task: {detail or 'unknown error'}")
-        raise RuntimeError(detail or "Unable to register update task")
-    _append(f"scheduled task registered: {task_name}")
+    detail = ((created.stdout or "") + " " + (created.stderr or "")).strip()
+    if created.returncode != 0:
+        _append(f"ERROR creating detached updater process: {detail or 'unknown error'}")
+        raise RuntimeError(detail or "Unable to create detached SiteWatcher updater process")
+    _append(f"detached updater requested: {detail or update_id}")
 
-    try:
-        started = subprocess.run(
-            ["schtasks.exe", "/Run", "/TN", task_name],
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=10,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("Timed out while requesting SiteWatcher update task start") from exc
-
-    start_detail = ((started.stdout or "") + " " + (started.stderr or "")).strip()
-    if started.returncode != 0:
-        _append(f"ERROR starting scheduled task: {start_detail or 'unknown error'}")
-        raise RuntimeError(start_detail or "Unable to start update task")
-    _append(f"scheduled task run requested: {start_detail or task_name}")
-
-    # Verify actual script execution rather than trusting the transient Task Scheduler state.
+    # The updater writes this marker before it sleeps or touches the SiteWatcher
+    # service. Seeing it proves the detached process actually executed.
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         if marker in _read_update_log():
-            _append(f"scheduled updater execution verified: task={task_name}")
+            _append(f"detached updater execution verified: id={update_id}")
             return
         time.sleep(0.25)
 
-    diagnostic = f"""
-$task = Get-ScheduledTask -TaskName '{_ps_quote(task_name)}' -ErrorAction SilentlyContinue
-$info = Get-ScheduledTaskInfo -TaskName '{_ps_quote(task_name)}' -ErrorAction SilentlyContinue
-if ($task) {{ Write-Output ('state=' + [string]$task.State) }} else {{ Write-Output 'state=missing' }}
-if ($info) {{ Write-Output ('lastResult=' + [string]$info.LastTaskResult); Write-Output ('lastRun=' + [string]$info.LastRunTime) }}
-"""
-    try:
-        diag = subprocess.run(
-            ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", diagnostic],
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=5,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        diag_detail = ((diag.stdout or "") + " " + (diag.stderr or "")).strip()
-    except Exception as exc:
-        diag_detail = str(exc)
-
-    _append(f"ERROR updater did not execute within verification window: {diag_detail}")
-    raise RuntimeError(f"Update task was requested but updater did not execute. {diag_detail}".strip())
+    _append(f"ERROR detached updater did not execute within verification window: id={update_id}; {detail}")
+    raise RuntimeError(f"Detached updater process was created but did not execute within verification window. {detail}".strip())
