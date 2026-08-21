@@ -10,6 +10,7 @@ $InstallerBuild = "0.9.12-latest-package"
 $TaskName = "SiteWatcher Agent"
 $ServiceName = "SiteWatcherAgent"
 $WinSwUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET4.exe"
+$FfmpegZipUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
 
 function Write-Step($text) { Write-Host "`n==> $text" -ForegroundColor Cyan }
 function Get-OrDefault($table, $key, $default) {
@@ -65,6 +66,46 @@ function Ensure-ServiceRuntime {
     }
 
     return @{ Wrapper=$Wrapper; Xml=$WrapperXml }
+}
+function Ensure-Ffmpeg {
+    $BinDir = Join-Path $InstallPath 'bin'
+    $Ffmpeg = Join-Path $BinDir 'ffmpeg.exe'
+    $Ffprobe = Join-Path $BinDir 'ffprobe.exe'
+    New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+
+    if ((Test-Path $Ffmpeg) -and (Test-Path $Ffprobe)) {
+        Write-Host "FFmpeg runtime present: $BinDir" -ForegroundColor DarkGray
+        return $BinDir
+    }
+
+    Write-Host "FFmpeg/FFprobe missing; repairing RTSP runtime..." -ForegroundColor Yellow
+
+    $SystemFfmpeg = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
+    $SystemFfprobe = Get-Command ffprobe.exe -ErrorAction SilentlyContinue
+    if ($SystemFfmpeg -and $SystemFfprobe) {
+        Copy-Item $SystemFfmpeg.Source $Ffmpeg -Force
+        Copy-Item $SystemFfprobe.Source $Ffprobe -Force
+    } else {
+        $TempFfmpegRoot = Join-Path $env:TEMP ("sitewatcher-ffmpeg-" + [guid]::NewGuid().ToString('N'))
+        $TempFfmpegZip = "$TempFfmpegRoot.zip"
+        try {
+            New-Item -ItemType Directory -Force -Path $TempFfmpegRoot | Out-Null
+            Invoke-WebRequest -Uri $FfmpegZipUrl -OutFile $TempFfmpegZip -UseBasicParsing
+            Expand-Archive -Path $TempFfmpegZip -DestinationPath $TempFfmpegRoot -Force
+            $DownloadedFfmpeg = Get-ChildItem $TempFfmpegRoot -Filter ffmpeg.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            $DownloadedFfprobe = Get-ChildItem $TempFfmpegRoot -Filter ffprobe.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $DownloadedFfmpeg -or -not $DownloadedFfprobe) { throw "Downloaded FFmpeg package did not contain ffmpeg.exe and ffprobe.exe." }
+            Copy-Item $DownloadedFfmpeg.FullName $Ffmpeg -Force
+            Copy-Item $DownloadedFfprobe.FullName $Ffprobe -Force
+        } finally {
+            Remove-Item $TempFfmpegZip -Force -ErrorAction SilentlyContinue
+            Remove-Item $TempFfmpegRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    if (-not (Test-Path $Ffmpeg) -or -not (Test-Path $Ffprobe)) { throw "Unable to restore FFmpeg/FFprobe required for RTSP monitoring." }
+    Write-Host "RTSP runtime repaired: $BinDir" -ForegroundColor Green
+    return $BinDir
 }
 function Try-RecoverService {
     try {
@@ -131,16 +172,6 @@ try {
         Copy-Item -LiteralPath $_.FullName -Destination $dest -Recurse -Force
     }
 
-    $envLines = @(
-        "SITEWATCH_SERVER_URL=$ServerUrl",
-        "SITEWATCH_AGENT_TOKEN=$AgentToken"
-    )
-    if ($DiscoveryCidrs) { $envLines += "SITEWATCH_DISCOVERY_CIDRS=$DiscoveryCidrs" }
-    foreach ($key in @('SITEWATCH_DISCOVERY_INTERVAL_SECONDS','SITEWATCH_SNAPSHOT_INTERVAL_SECONDS','SITEWATCH_FFMPEG_DIR')) {
-        if ($ExistingEnv.ContainsKey($key) -and $ExistingEnv[$key]) { $envLines += "$key=$($ExistingEnv[$key])" }
-    }
-    Set-Content -Path (Join-Path $InstallPath '.env') -Value $envLines -Encoding ASCII
-
     Write-Step "Creating/updating Python virtual environment"
     $Python = $null
     $Candidates = @('py.exe','python.exe')
@@ -172,6 +203,20 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Unable to update pip." }
     & $VenvPython -m pip install --disable-pip-version-check --quiet -r (Join-Path $InstallPath 'requirements.txt') --upgrade
     if ($LASTEXITCODE -ne 0) { throw "Unable to install SiteWatcher dependencies." }
+
+    Write-Step "Checking RTSP runtime"
+    $BinDir = Ensure-Ffmpeg
+
+    $envLines = @(
+        "SITEWATCH_SERVER_URL=$ServerUrl",
+        "SITEWATCH_AGENT_TOKEN=$AgentToken"
+    )
+    if ($DiscoveryCidrs) { $envLines += "SITEWATCH_DISCOVERY_CIDRS=$DiscoveryCidrs" }
+    foreach ($key in @('SITEWATCH_DISCOVERY_INTERVAL_SECONDS','SITEWATCH_SNAPSHOT_INTERVAL_SECONDS')) {
+        if ($ExistingEnv.ContainsKey($key) -and $ExistingEnv[$key]) { $envLines += "$key=$($ExistingEnv[$key])" }
+    }
+    $envLines += "SITEWATCH_FFMPEG_DIR=$BinDir"
+    Set-Content -Path (Join-Path $InstallPath '.env') -Value $envLines -Encoding ASCII
 
     Write-Step "Installing Windows service"
     $runtime = Ensure-ServiceRuntime
@@ -211,6 +256,7 @@ try {
     Write-Host "Server: $ServerUrl"
     Write-Host "Install path: $InstallPath"
     Write-Host "Service logs: $InstallPath\logs"
+    Write-Host "RTSP runtime: $BinDir"
     Write-Host "`nSiteWatcher native Windows service installed/upgraded successfully. Docker is not required." -ForegroundColor Green
 }
 catch {
