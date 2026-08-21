@@ -6,7 +6,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$InstallerBuild = "0.9.5-latest-package"
+$InstallerBuild = "0.9.8-latest-package"
 $TaskName = "SiteWatcher Agent"
 $ServiceName = "SiteWatcherAgent"
 
@@ -187,7 +187,7 @@ if (-not ((Test-Path $ffmpegLocal) -and (Test-Path $ffprobeLocal))) {
         Copy-Item $ffmpeg.Source $ffmpegLocal -Force
         Copy-Item $ffprobe.Source $ffprobeLocal -Force
     } else {
-        Write-Warning "FFmpeg/ffprobe were not found. RTSP checks and previews will be unavailable."
+        Write-Warning "FFmpeg/FFprobe were not found. RTSP checks and previews will be unavailable."
     }
 }
 
