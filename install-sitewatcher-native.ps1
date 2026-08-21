@@ -6,7 +6,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$InstallerBuild = "0.9.15-latest-package"
+$InstallerBuild = "0.9.16-latest-package"
 $TaskName = "SiteWatcher Agent"
 $ServiceName = "SiteWatcherAgent"
 $WinSwUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET4.exe"
