@@ -30,14 +30,11 @@ def main() -> None:
     os.chdir(root)
     load_env(root)
 
-    # Import only after .env is loaded because workers read configuration
-    # from environment variables at import time.
     from .main import main as agent_main
     from . import remote_console
+    from .host_monitor import host_monitor_loop
     from .update_launcher import launch_self_update
 
-    # Use the hardened launcher for maintenance jobs. Keeping it separate from
-    # the console worker makes update behavior easier to test and change safely.
     remote_console._launch_self_update = launch_self_update
 
     console_thread = threading.Thread(
@@ -47,6 +44,14 @@ def main() -> None:
     )
     console_thread.start()
     print("[startup] worker remote-console started", flush=True)
+
+    host_thread = threading.Thread(
+        target=host_monitor_loop,
+        name="sitewatch-host-monitor",
+        daemon=True,
+    )
+    host_thread.start()
+    print("[startup] worker host-monitor started", flush=True)
 
     agent_main()
 
