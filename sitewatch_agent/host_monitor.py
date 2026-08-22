@@ -4,7 +4,10 @@ import json
 import os
 import socket
 import subprocess
+import time
 from datetime import datetime, timezone
+
+import requests
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -54,31 +57,43 @@ foreach($name in @($wanted)){{
     memory_threshold = float(settings.get("memoryThresholdPercent", 90))
     disk_threshold = float(settings.get("diskThresholdPercent", 90))
     problems = []
-
     cpu = data.get("cpuPercent")
-    if cpu is not None and float(cpu) >= cpu_threshold:
-        problems.append(f"CPU {float(cpu):.1f}% >= {cpu_threshold:.1f}%")
+    if cpu is not None and float(cpu) >= cpu_threshold: problems.append(f"CPU {float(cpu):.1f}% >= {cpu_threshold:.1f}%")
     memory = data.get("memoryPercent")
-    if memory is not None and float(memory) >= memory_threshold:
-        problems.append(f"Memory {float(memory):.1f}% >= {memory_threshold:.1f}%")
+    if memory is not None and float(memory) >= memory_threshold: problems.append(f"Memory {float(memory):.1f}% >= {memory_threshold:.1f}%")
     for disk in data.get("disks") or []:
         used = disk.get("usedPercent")
-        if used is not None and float(used) >= disk_threshold:
-            problems.append(f"Disk {disk.get('name')} {float(used):.1f}% >= {disk_threshold:.1f}%")
+        if used is not None and float(used) >= disk_threshold: problems.append(f"Disk {disk.get('name')} {float(used):.1f}% >= {disk_threshold:.1f}%")
     for service in data.get("services") or []:
-        if str(service.get("status") or "").lower() != "running":
-            problems.append(f"Service {service.get('displayName') or service.get('name')} is {service.get('status') or 'Unknown'}")
+        if str(service.get("status") or "").lower() != "running": problems.append(f"Service {service.get('displayName') or service.get('name')} is {service.get('status') or 'Unknown'}")
 
     return {
-        "observedAt": datetime.now(timezone.utc).isoformat(),
-        "hostname": socket.gethostname(),
-        "cpuPercent": data.get("cpuPercent"),
-        "memoryPercent": data.get("memoryPercent"),
-        "memoryTotalBytes": data.get("memoryTotalBytes"),
-        "memoryAvailableBytes": data.get("memoryAvailableBytes"),
-        "disks": data.get("disks") or [],
-        "services": data.get("services") or [],
-        "serviceInventory": data.get("serviceInventory") or [],
-        "overallOk": len(problems) == 0,
-        "problems": problems,
+        "observedAt": datetime.now(timezone.utc).isoformat(), "hostname": socket.gethostname(),
+        "cpuPercent": data.get("cpuPercent"), "memoryPercent": data.get("memoryPercent"),
+        "memoryTotalBytes": data.get("memoryTotalBytes"), "memoryAvailableBytes": data.get("memoryAvailableBytes"),
+        "disks": data.get("disks") or [], "services": data.get("services") or [], "serviceInventory": data.get("serviceInventory") or [],
+        "overallOk": len(problems) == 0, "problems": problems,
     }
+
+
+def host_monitor_loop():
+    server = os.environ["SITEWATCH_SERVER_URL"].rstrip("/")
+    token = os.environ["SITEWATCH_AGENT_TOKEN"]
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    time.sleep(8)
+    while True:
+        interval = 60
+        try:
+            r = requests.get(server + "/api/agent/config", headers=headers, timeout=20)
+            r.raise_for_status()
+            settings = (r.json() or {}).get("hostMonitor") or {}
+            interval = max(15, min(3600, int(settings.get("intervalSeconds", 60))))
+            if settings.get("enabled", True):
+                result = collect_host_status(settings)
+                post = requests.post(server + "/api/agent/host-monitor", headers=headers, json=result, timeout=30)
+                post.raise_for_status()
+                state = "OK" if result.get("overallOk") else "WARN"
+                print(f"[host] {state} cpu={result.get('cpuPercent')}% memory={result.get('memoryPercent')}% problems={len(result.get('problems') or [])}", flush=True)
+        except Exception as exc:
+            print(f"[host] monitor error: {exc}", flush=True)
+        time.sleep(interval)
