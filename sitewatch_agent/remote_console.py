@@ -47,26 +47,33 @@ def _launch_self_update():
     from .update_launcher import launch_self_update
     return launch_self_update()
 
-def _scan_host(ip):
-    ports=[]
-    for port in SCAN_PORTS:
+def _scan_host(ip, ports):
+    found=[]
+    for port in ports:
         try:
-            with socket.create_connection((ip,port),timeout=.25):ports.append(port)
+            with socket.create_connection((ip,port),timeout=.25):found.append(port)
         except OSError:pass
-    alive=bool(ports)
+    alive=bool(found)
     if not alive:
         try:alive=subprocess.run(["ping.exe","-n","1","-w","350",ip],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=1,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0)).returncode==0
         except Exception:pass
     if not alive:return None
     try:hostname=socket.gethostbyaddr(ip)[0]
     except Exception:hostname=""
-    return {"ip":ip,"hostname":hostname,"ports":ports}
+    return {"ip":ip,"hostname":hostname,"ports":found}
 
-def _scan_network(cidr):
+def _scan_network(cidr, ports=None):
     n=ipaddress.ip_network(cidr.strip(),strict=False)
     if n.version!=4:raise ValueError("Only IPv4 networks are supported.")
     if n.prefixlen<24:raise ValueError("Remote IP Scanner is limited to /24 or smaller networks.")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=48) as pool:r=[x for x in pool.map(_scan_host,[str(i) for i in n.hosts()]) if x]
+    scan_ports=[]
+    for value in (ports or SCAN_PORTS):
+        port=int(value)
+        if port<1 or port>65535:raise ValueError(f"Invalid TCP port: {port}")
+        if port not in scan_ports:scan_ports.append(port)
+    if len(scan_ports)>72:raise ValueError("Too many scan ports requested.")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=48) as pool:
+        r=[x for x in pool.map(lambda ip:_scan_host(ip,scan_ports),[str(i) for i in n.hosts()]) if x]
     r.sort(key=lambda row:tuple(int(x) for x in row["ip"].split(".")));return r
 
 def _post_result(command_id,result):
@@ -119,7 +126,14 @@ def remote_console_loop():
                 except Exception as e:_post_result(command_id,{"stdout":"","stderr":f"Unable to collect agent logs: {e}","exitCode":1})
                 continue
             if command.startswith(SCAN_PREFIX) and shell=="system":
-                try:_post_result(command_id,{"stdout":json.dumps({"cidr":command[len(SCAN_PREFIX):].strip(),"hosts":_scan_network(command[len(SCAN_PREFIX):].strip())}),"stderr":"","exitCode":0})
+                try:
+                    payload=command[len(SCAN_PREFIX):]
+                    parts=payload.split("|",1)
+                    cidr=parts[0].strip()
+                    ports=None
+                    if len(parts)>1 and parts[1].strip():ports=[int(x) for x in parts[1].split(",") if x.strip()]
+                    hosts=_scan_network(cidr,ports)
+                    _post_result(command_id,{"stdout":json.dumps({"cidr":cidr,"ports":ports or list(SCAN_PORTS),"hosts":hosts}),"stderr":"","exitCode":0})
                 except Exception as e:_post_result(command_id,{"stdout":"","stderr":str(e),"exitCode":1})
                 continue
             _post_result(command_id,_run(command,shell))
