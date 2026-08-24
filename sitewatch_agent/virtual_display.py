@@ -116,16 +116,17 @@ def _download_manager() -> None:
 
     asset_needle = '$asset = $releaseInfo.assets | Where-Object { $_.name -match "x64\\.zip$" } | Select-Object -First 1'
     asset_replacement = (
-        '$asset = $releaseInfo.assets | Where-Object { $_.name -match "^VirtualDisplayDriver.*x64\\.zip$" } | Select-Object -First 1\n'
+        '$asset = $releaseInfo.assets | Where-Object { $_.name -match "^VirtualDisplayDriver-x86\\.Driver\\.Only\\.zip$" } | Select-Object -First 1\n'
         '                if (-not $asset) {\n'
-        '                    $asset = $releaseInfo.assets | Where-Object { $_.name -match "^VirtualDisplayDriver.*Driver\\.Only\\.zip$" } | Select-Object -First 1\n'
-        '                    if ($asset) { Write-Log -Message ("Using official Virtual Display Driver asset: " + $asset.name) -Status \'Warning\' }\n'
-        '                }'
+        '                    $asset = $releaseInfo.assets | Where-Object { $_.name -match "^VirtualDisplayDriver.*Driver\\.Only\\.zip$" -and $_.name -notmatch "ARM64" } | Select-Object -First 1\n'
+        '                }\n'
+        '                if (-not $asset) { throw "Could not find the standard Windows Virtual Display Driver package in the latest GitHub release." }\n'
+        '                Write-Log -Message ("Using official Virtual Display Driver asset: " + $asset.name) -Status \'Warning\''
     )
     if asset_needle not in text:
         raise RuntimeError("Official virtual-driver-manager.ps1 changed its release asset selector; refusing to apply an unverified compatibility patch.")
     text = text.replace(asset_needle, asset_replacement, 1)
-    _log("Applied SiteWatcher compatibility selector for official VirtualDisplayDriver release assets only.")
+    _log("Applied SiteWatcher compatibility selector for standard Windows VirtualDisplayDriver package; ARM64 excluded.")
 
     inf_needle = '& $devconExe install (Join-Path $tempDir "MttVDD.inf") "Root\\MttVDD"'
     inf_replacement = (
