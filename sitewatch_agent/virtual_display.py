@@ -131,8 +131,28 @@ def _download_manager() -> None:
 
     if len(body) < 5000 or b"virtual-driver-manager" not in body.lower():
         raise RuntimeError("Downloaded virtual-driver-manager.ps1 failed a basic content validation check.")
-    VDD_MANAGER_PATH.write_bytes(body)
-    _log(f"Manager script saved to {VDD_MANAGER_PATH} ({len(body)} bytes)")
+
+    # Upstream's manager currently looks only for an asset ending in x64.zip. Newer
+    # official releases may publish the signed driver as a *.Driver.Only.zip asset.
+    # Keep the upstream script and its GitHub release lookup, but add a compatibility
+    # fallback that still selects only an asset returned by the official repository.
+    text = body.decode("utf-8-sig", errors="strict")
+    needle = '$asset = $releaseInfo.assets | Where-Object { $_.name -match "x64\\.zip$" } | Select-Object -First 1'
+    replacement = (
+        '$asset = $releaseInfo.assets | Where-Object { $_.name -match "x64\\.zip$" } | Select-Object -First 1\n'
+        '                if (-not $asset) {\n'
+        '                    $asset = $releaseInfo.assets | Where-Object { $_.name -match "Driver\\.Only\\.zip$" } | Select-Object -First 1\n'
+        '                    if ($asset) { Write-Log -Message ("Using official driver-only release asset: " + $asset.name) -Status \'Warning\' }\n'
+        '                }'
+    )
+    if needle in text:
+        text = text.replace(needle, replacement, 1)
+        _log("Applied SiteWatcher compatibility fallback for official *.Driver.Only.zip VDD release assets.")
+    else:
+        _log("Official manager script no longer contains the known x64.zip selector; no compatibility patch was applied.")
+
+    VDD_MANAGER_PATH.write_text(text, encoding="utf-8-sig", newline="\r\n")
+    _log(f"Manager script saved to {VDD_MANAGER_PATH} ({len(body)} downloaded bytes)")
 
 
 def _run_manager(action: str, timeout: int = 300) -> tuple[int, str, str]:
@@ -200,8 +220,6 @@ def manage_virtual_display(action: str) -> dict:
     combined = f"{stdout}\n{stderr}".lower()
     after = get_virtual_display_status()
 
-    # Some driver/DevCon operations can complete but still require Windows to reboot
-    # before the root display device becomes usable. Preserve that as a first-class result.
     restart_required = bool(after.get("restartRequired")) or any(
         phrase in combined
         for phrase in ("restart required", "reboot required", "restart the computer", "reboot the computer")
