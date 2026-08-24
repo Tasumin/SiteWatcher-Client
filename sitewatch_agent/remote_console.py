@@ -10,6 +10,7 @@ import requests
 
 from .agent_logs import collect_agent_logs, create_agent_logs_zip
 from .tightvnc import get_tightvnc_status, install_tightvnc, restart_tightvnc, uninstall_tightvnc
+from .virtual_display import get_virtual_display_status, manage_virtual_display
 
 SERVER = os.environ["SITEWATCH_SERVER_URL"].rstrip("/")
 TOKEN = os.environ["SITEWATCH_AGENT_TOKEN"]
@@ -22,6 +23,11 @@ VNC_STATUS_COMMAND = "__SITEWATCH_VNC_STATUS__"
 VNC_INSTALL_COMMAND = "__SITEWATCH_VNC_INSTALL__"
 VNC_RESTART_COMMAND = "__SITEWATCH_VNC_RESTART__"
 VNC_UNINSTALL_COMMAND = "__SITEWATCH_VNC_UNINSTALL__"
+VDD_STATUS_COMMAND = "__SITEWATCH_VDD_STATUS__"
+VDD_INSTALL_COMMAND = "__SITEWATCH_VDD_INSTALL__"
+VDD_ENABLE_COMMAND = "__SITEWATCH_VDD_ENABLE__"
+VDD_DISABLE_COMMAND = "__SITEWATCH_VDD_DISABLE__"
+VDD_REPAIR_COMMAND = "__SITEWATCH_VDD_REPAIR__"
 SCAN_PORTS = (22, 53, 80, 443, 554, 8000, 8080, 9000)
 BLOCKED_TOKENS = (";", "&&", "||", "|", ">", "<", "`", "$(", "@(")
 ALLOWED_PREFIXES = ("ping ","ping.exe ","tracert ","tracert.exe ","pathping ","pathping.exe ","nslookup ","nslookup.exe ","curl ","curl.exe ","arp ","arp.exe ","ipconfig","route print","route.exe print","netstat ","netstat.exe ","test-netconnection ","resolve-dnsname ","get-netipaddress","get-netroute","get-netadapter","get-nettcpconnection","get-netneighbor","get-dnsclient","get-dnsclientserveraddress","invoke-webrequest ","invoke-restmethod ")
@@ -95,6 +101,15 @@ def _handle_vnc(command):
     else:raise ValueError("Unknown TightVNC maintenance command")
     return {"stdout":json.dumps(r),"stderr":"","exitCode":0}
 
+def _handle_vdd(command):
+    if command==VDD_STATUS_COMMAND:r=get_virtual_display_status()
+    elif command==VDD_INSTALL_COMMAND:r=manage_virtual_display("install")
+    elif command==VDD_ENABLE_COMMAND:r=manage_virtual_display("enable")
+    elif command==VDD_DISABLE_COMMAND:r=manage_virtual_display("disable")
+    elif command==VDD_REPAIR_COMMAND:r=manage_virtual_display("repair")
+    else:raise ValueError("Unknown virtual display maintenance command")
+    return {"stdout":json.dumps(r),"stderr":"","exitCode":0}
+
 def remote_console_loop():
     time.sleep(3)
     while True:
@@ -114,6 +129,11 @@ def remote_console_loop():
                 print(f"[vnc] maintenance command={command} job id={command_id[:8]}",flush=True)
                 try:_post_result(command_id,_handle_vnc(command))
                 except Exception as e:_post_result(command_id,{"stdout":"","stderr":f"TightVNC operation failed: {e}","exitCode":1})
+                continue
+            if command in (VDD_STATUS_COMMAND,VDD_INSTALL_COMMAND,VDD_ENABLE_COMMAND,VDD_DISABLE_COMMAND,VDD_REPAIR_COMMAND) and shell=="system":
+                print(f"[vdd] maintenance command={command} job id={command_id[:8]}",flush=True)
+                try:_post_result(command_id,_handle_vdd(command))
+                except Exception as e:_post_result(command_id,{"stdout":"","stderr":f"Virtual display operation failed: {e}","exitCode":1})
                 continue
             if command==LOG_BUNDLE_COMMAND and shell=="system":
                 try:_upload_log_bundle(command_id);_post_result(command_id,{"stdout":"Full log bundle ready for download.","stderr":"","exitCode":0})
