@@ -100,7 +100,7 @@ try {
         Write-Step "Enrolling this computer with SiteWatcher"
         $enrollBody=@{enrollmentKey=$EnrollmentKey;hostname=$env:COMPUTERNAME}|ConvertTo-Json -Compress
         try{$enrollment=Invoke-RestMethod -Method Post -Uri ($ServerUrl.TrimEnd('/')+'/api/agent/enroll') -ContentType 'application/json' -Body $enrollBody -TimeoutSec 30}catch{throw "Automatic SiteWatcher enrollment failed: $($_.Exception.Message)"}
-        $AgentToken=String($enrollment.token)
+        $AgentToken=[string]$enrollment.token
         if(-not $AgentToken){throw "SiteWatcher enrollment did not return an agent token."}
         Write-Host "Enrolled as $($enrollment.agent.name) in $($enrollment.holding.tenant) / $($enrollment.holding.location)." -ForegroundColor Green
         Write-Host "A SiteWatcher administrator can now assign this agent to its final client/location remotely." -ForegroundColor Yellow
