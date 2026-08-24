@@ -1,4 +1,4 @@
-import os, time, threading, requests, base64, socket, uuid, sys
+import os, time, threading, requests, base64, socket, uuid, sys, concurrent.futures
 from datetime import datetime, timezone
 from . import __version__
 from .checks import run_device, capture_snapshot
@@ -12,6 +12,8 @@ TOKEN = os.environ["SITEWATCH_AGENT_TOKEN"]
 DB_PATH = os.getenv("SITEWATCH_DB", "/data/queue.db")
 SNAPSHOT_INTERVAL = int(os.getenv("SITEWATCH_SNAPSHOT_INTERVAL_SECONDS", "300"))
 DISCOVERY_INTERVAL = int(os.getenv("SITEWATCH_DISCOVERY_INTERVAL_SECONDS", "900"))
+MONITOR_WORKERS = max(2, min(32, int(os.getenv("SITEWATCH_MONITOR_WORKERS", "8"))))
+SNAPSHOT_WORKERS = max(1, min(4, int(os.getenv("SITEWATCH_SNAPSHOT_WORKERS", "2"))))
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 
 storage = Storage(DB_PATH)
@@ -43,7 +45,6 @@ def acquire_single_instance_lock():
     try:
         if os.name == "nt":
             import msvcrt
-            # Windows byte-range locks require at least one byte to exist.
             handle.seek(0, os.SEEK_END)
             if handle.tell() == 0:
                 handle.write("\0")
@@ -70,7 +71,6 @@ def acquire_single_instance_lock():
                 handle.close()
                 sys.exit(2)
 
-        # Preserve byte 0 as the Windows lock byte and write owner metadata after it.
         handle.seek(1 if os.name == "nt" else 0)
         handle.truncate()
         handle.write(f"instance={INSTANCE_ID} pid={os.getpid()} host={socket.gethostname()} started={datetime.now(timezone.utc).isoformat()}\n")
@@ -114,20 +114,21 @@ def flush_queue():
     storage.delete(ids)
     print(f"[upload] sent {len(ids)} results", flush=True)
 
-def maybe_upload_snapshot(device, result, now):
-    if device.get("type") != "camera" or not result.get("overallOk"): return
-    rtsp_result = next((c for c in result.get("checks", []) if c.get("type") == "rtsp"), None)
-    if not rtsp_result or not rtsp_result.get("ok"): return
-    if now - last_snapshot.get(device["id"], 0) < SNAPSHOT_INTERVAL: return
+def upload_snapshot(device, result):
     try:
         snapshot = capture_snapshot(device)
         if not snapshot: return
         jpeg = snapshot["jpeg"]
         payload = {"deviceId": device["id"], "capturedAt": datetime.now(timezone.utc).isoformat(), "contentType": "image/jpeg", "imageBase64": base64.b64encode(jpeg).decode("ascii"), "width": snapshot.get("width"), "height": snapshot.get("height")}
         r = api("POST", "/api/agent/snapshot", json=payload); r.raise_for_status()
-        last_snapshot[device["id"]] = now
         print(f"[snapshot] {device['name']}: uploaded {len(jpeg)//1024} KB JPEG", flush=True)
     except Exception as e: print(f"[snapshot] {device['name']}: {e}", flush=True)
+
+def snapshot_is_eligible(device, result, now):
+    if device.get("type") != "camera" or not result.get("overallOk"): return False
+    rtsp_result = next((c for c in result.get("checks", []) if c.get("type") == "rtsp"), None)
+    if not rtsp_result or not rtsp_result.get("ok"): return False
+    return now - last_snapshot.get(device["id"], 0) >= SNAPSHOT_INTERVAL
 
 def preview_loop():
     time.sleep(3)
@@ -236,9 +237,16 @@ def onvif_loop():
         except Exception as e: print(f"[onvif] worker error: {e}", flush=True)
         time.sleep(2)
 
+def scheduled_check(device):
+    try:
+        return run_device(device)
+    except Exception as e:
+        return {"deviceId": device["id"], "deviceName": device["name"], "observedAt": datetime.now(timezone.utc).isoformat(), "overallOk": False, "latencyMs": None, "message": f"Agent check error: {e}", "checks": []}
+
 def main():
     lock_handle = acquire_single_instance_lock()
     print(f"[startup] SiteWatch agent v{__version__} instance={INSTANCE_ID} pid={os.getpid()} host={socket.gethostname()}", flush=True)
+    print(f"[startup] monitoring scheduler workers={MONITOR_WORKERS} snapshot_workers={SNAPSHOT_WORKERS}", flush=True)
     while True:
         try: fetch_config(); break
         except Exception as e: print(f"[startup] waiting for server: {e}", flush=True); time.sleep(10)
@@ -248,25 +256,54 @@ def main():
     start_worker("retry", monitor_retry_loop)
     start_worker("onvif", onvif_loop)
     start_worker("remote-tunnel", lambda: remote_tunnel_loop(SERVER, TOKEN))
+
+    monitor_pool = concurrent.futures.ThreadPoolExecutor(max_workers=MONITOR_WORKERS, thread_name_prefix="sitewatch-check")
+    snapshot_pool = concurrent.futures.ThreadPoolExecutor(max_workers=SNAPSHOT_WORKERS, thread_name_prefix="sitewatch-snapshot")
+    in_flight = {}
+    snapshot_in_flight = {}
     last_config = time.time()
+
     while True:
         now = time.time()
         if now - last_config >= int(config.get("defaults", {}).get("configRefreshSeconds", 120)):
             try: fetch_config()
             except Exception as e: print(f"[config] {e}", flush=True)
             last_config = now
+
+        # Harvest completed checks without letting one slow device block the rest.
+        for device_id, item in list(in_flight.items()):
+            future, device = item
+            if not future.done(): continue
+            del in_flight[device_id]
+            try: result = future.result()
+            except Exception as e: result = {"deviceId": device["id"], "deviceName": device["name"], "observedAt": datetime.now(timezone.utc).isoformat(), "overallOk": False, "latencyMs": None, "message": f"Agent check worker error: {e}", "checks": []}
+            storage.enqueue(result)
+            print(f"[check] {device['name']}: {'UP' if result['overallOk'] else 'DOWN'} - {result['message']}", flush=True)
+
+            snapshot_future = snapshot_in_flight.get(device_id)
+            if snapshot_future and snapshot_future.done():
+                snapshot_in_flight.pop(device_id, None)
+            if device_id not in snapshot_in_flight and snapshot_is_eligible(device, result, now):
+                last_snapshot[device_id] = now
+                snapshot_in_flight[device_id] = snapshot_pool.submit(upload_snapshot, dict(device), result)
+
+        for device_id, future in list(snapshot_in_flight.items()):
+            if future.done():
+                snapshot_in_flight.pop(device_id, None)
+                try: future.result()
+                except Exception as e: print(f"[snapshot] worker error for {device_id}: {e}", flush=True)
+
+        # Submit all due devices to a bounded pool. A device cannot have more than
+        # one scheduled check in flight at a time.
         for device in list(config.get("devices", [])):
-            if now < next_due.get(device["id"], 0): continue
-            try:
-                result = run_device(device); storage.enqueue(result)
-                print(f"[check] {device['name']}: {'UP' if result['overallOk'] else 'DOWN'} - {result['message']}", flush=True)
-                maybe_upload_snapshot(device, result, now)
-            except Exception as e:
-                storage.enqueue({"deviceId": device["id"], "deviceName": device["name"], "observedAt": datetime.now(timezone.utc).isoformat(), "overallOk": False, "latencyMs": None, "message": f"Agent check error: {e}", "checks": []})
-            next_due[device["id"]] = now + int(device.get("checkIntervalSeconds", 60))
+            device_id = device["id"]
+            if device_id in in_flight or now < next_due.get(device_id, 0): continue
+            next_due[device_id] = now + max(5, int(device.get("checkIntervalSeconds", 60)))
+            in_flight[device_id] = (monitor_pool.submit(scheduled_check, dict(device)), dict(device))
+
         try: flush_queue()
         except Exception as e: print(f"[upload] queued locally: {e}", flush=True)
-        time.sleep(1)
+        time.sleep(0.5)
 
 if __name__ == "__main__":
     main()
