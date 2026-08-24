@@ -181,6 +181,44 @@ def _download_official_driver() -> Path:
     return infs[0]
 
 
+def _trust_official_catalog(inf: Path) -> None:
+    cat = inf.with_name("mttvdd.cat")
+    if not cat.exists():
+        matches = list(inf.parent.rglob("mttvdd.cat"))
+        if len(matches) != 1:
+            raise RuntimeError(f"Expected exactly one mttvdd.cat beside the official VDD INF, found {len(matches)}.")
+        cat = matches[0]
+
+    cat_literal = str(cat).replace("'", "''")
+    script = rf"""
+$ErrorActionPreference = 'Stop'
+$cat = '{cat_literal}'
+$bytes = [System.IO.File]::ReadAllBytes($cat)
+$certs = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
+$certs.Import($bytes)
+if ($certs.Count -lt 1) {{ throw 'No signer certificates were found in mttvdd.cat.' }}
+$store = New-Object System.Security.Cryptography.X509Certificates.X509Store('TrustedPublisher','LocalMachine')
+$store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+try {{
+    foreach ($cert in $certs) {{
+        $existing = $store.Certificates | Where-Object {{ $_.Thumbprint -eq $cert.Thumbprint }} | Select-Object -First 1
+        if (-not $existing) {{ $store.Add($cert) }}
+        Write-Output ("TrustedPublisher certificate: " + $cert.Subject + " [" + $cert.Thumbprint + "]")
+    }}
+}} finally {{
+    $store.Close()
+}}
+"""
+    _log(f"Importing signer certificate(s) from official VDD catalog {cat} into LocalMachine\\TrustedPublisher")
+    try:
+        result = _run_ps(script, 60)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Timed out while trusting the official Virtual Display Driver catalog signer.") from exc
+    _log(f"Certificate trust exit={result.returncode}\nSTDOUT:\n{result.stdout or ''}\nSTDERR:\n{result.stderr or ''}")
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "Unable to trust the official VDD catalog signer.").strip())
+
+
 def _run_pnputil(args: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
     cmd = ["pnputil.exe", *args]
     _log("Running: " + subprocess.list2cmdline(cmd))
@@ -248,6 +286,8 @@ def _create_root_device() -> None:
 def _native_install() -> tuple[int, str, str]:
     inf = _download_official_driver()
     output: list[str] = []
+
+    _trust_official_catalog(inf)
 
     stage = _run_pnputil(["/add-driver", str(inf), "/install"])
     output.append(stage.stdout or "")
