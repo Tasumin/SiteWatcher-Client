@@ -10,7 +10,7 @@ import requests
 
 from .agent_logs import collect_agent_logs, create_agent_logs_zip
 from .tightvnc import get_tightvnc_status, install_tightvnc, restart_tightvnc, uninstall_tightvnc
-from .virtual_display_compat import get_virtual_display_status, manage_virtual_display
+from .virtual_display_repair import get_virtual_display_status, manage_virtual_display
 
 SERVER = os.environ["SITEWATCH_SERVER_URL"].rstrip("/")
 TOKEN = os.environ["SITEWATCH_AGENT_TOKEN"]
