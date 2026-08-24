@@ -42,6 +42,7 @@ def _control_close_details(ws) -> str:
 def _relay_connection(server_url: str, token: str, request: dict) -> None:
     connection_id = str(request.get("connectionId") or "")
     target_host = str(request.get("targetHost") or "").strip()
+    tunnel_node_id = str(request.get("nodeId") or "").strip()
     try:
         target_port = int(request.get("targetPort") or 0)
     except Exception:
@@ -54,7 +55,11 @@ def _relay_connection(server_url: str, token: str, request: dict) -> None:
     tcp = None
     data_ws = None
     try:
-        print(f"[tunnel] opening {target_host}:{target_port} connection={connection_id}", flush=True)
+        print(
+            f"[tunnel] opening {target_host}:{target_port} connection={connection_id}"
+            + (f" node={tunnel_node_id}" if tunnel_node_id else ""),
+            flush=True,
+        )
         tcp = socket.create_connection((target_host, target_port), timeout=15)
         tcp.settimeout(None)
 
@@ -63,11 +68,19 @@ def _relay_connection(server_url: str, token: str, request: dict) -> None:
             f"?id={quote(connection_id, safe='')}"
             f"&token={quote(token, safe='')}"
         )
-        data_ws = websocket.create_connection(
-            data_url,
-            timeout=20,
-            enable_multithread=True,
-        )
+        connect_options = {
+            "timeout": 20,
+            "enable_multithread": True,
+        }
+        # The control connection may land on any tunnel node. Every follow-up
+        # data WebSocket must return to that same node because pending connection
+        # state is intentionally kept in that daemon's memory. The public load
+        # balancer routes this short-lived HttpOnly-style routing cookie value.
+        if tunnel_node_id:
+            connect_options["cookie"] = (
+                "sitewatch_tunnel_node=" + quote(tunnel_node_id, safe="-_.~")
+            )
+        data_ws = websocket.create_connection(data_url, **connect_options)
         data_ws.settimeout(None)
 
         stopped = threading.Event()
@@ -122,6 +135,7 @@ def remote_tunnel_loop(server_url: str, token: str) -> None:
 
     while True:
         control_ws = None
+        control_node_id = ""
         try:
             control_url = (
                 f"{_ws_base(server_url)}/tunnel/agent"
@@ -156,13 +170,18 @@ def remote_tunnel_loop(server_url: str, token: str) -> None:
 
                 message_type = str(message.get("type") or "")
                 if message_type == "ready":
-                    print("[tunnel] server confirmed remote management channel", flush=True)
+                    control_node_id = str(message.get("nodeId") or "").strip()
+                    suffix = f" node={control_node_id}" if control_node_id else ""
+                    print(f"[tunnel] server confirmed remote management channel{suffix}", flush=True)
                     continue
 
                 if message_type == "open":
+                    relay_request = dict(message)
+                    if control_node_id and not relay_request.get("nodeId"):
+                        relay_request["nodeId"] = control_node_id
                     worker = threading.Thread(
                         target=_relay_connection,
-                        args=(server_url, token, message),
+                        args=(server_url, token, relay_request),
                         name=f"sitewatch-tunnel-data-{str(message.get('connectionId') or '')[:8]}",
                         daemon=True,
                     )
