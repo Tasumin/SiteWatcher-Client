@@ -7,7 +7,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$InstallerBuild = "0.9.40-remote-hands-enrollment"
+$InstallerBuild = "0.9.41-duplicate-agent-protection"
 $TaskName = "SiteWatcher Agent"
 $ServiceName = "SiteWatcherAgent"
 $WinSwUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET4.exe"
@@ -98,10 +98,13 @@ try {
     if(-not $AgentToken -and -not $IsUpgrade){
         if(-not $EnrollmentKey -or $EnrollmentKey -eq '__SITEWATCH_ENROLLMENT_KEY__'){throw "No agent token was provided and this installer does not contain a SiteWatcher enrollment key. Download a fresh installer from $ServerUrl/downloads or supply -AgentToken."}
         Write-Step "Enrolling this computer with SiteWatcher"
-        $enrollBody=@{enrollmentKey=$EnrollmentKey;hostname=$env:COMPUTERNAME}|ConvertTo-Json -Compress
+        $machineGuid=''
+        try{$machineGuid=[string](Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Cryptography' -Name MachineGuid -ErrorAction Stop).MachineGuid}catch{}
+        $enrollBody=@{enrollmentKey=$EnrollmentKey;hostname=$env:COMPUTERNAME;machineId=$machineGuid}|ConvertTo-Json -Compress
         try{$enrollment=Invoke-RestMethod -Method Post -Uri ($ServerUrl.TrimEnd('/')+'/api/agent/enroll') -ContentType 'application/json' -Body $enrollBody -TimeoutSec 30}catch{throw "Automatic SiteWatcher enrollment failed: $($_.Exception.Message)"}
         $AgentToken=[string]$enrollment.token
         if(-not $AgentToken){throw "SiteWatcher enrollment did not return an agent token."}
+        if($enrollment.reused){Write-Host "Existing SiteWatcher agent record recognized for this Windows machine; a duplicate was not created." -ForegroundColor Green}
         Write-Host "Enrolled as $($enrollment.agent.name) in $($enrollment.holding.tenant) / $($enrollment.holding.location)." -ForegroundColor Green
         Write-Host "A SiteWatcher administrator can now assign this agent to its final client/location remotely." -ForegroundColor Yellow
     }
