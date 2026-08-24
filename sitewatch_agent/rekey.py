@@ -43,10 +43,10 @@ def apply_pending_rekey(server: str, token: str) -> dict:
     temp_path.write_text("\n".join(updated) + "\n", encoding="ascii")
     os.replace(temp_path, env_path)
 
-    # Restart out-of-process after the current command result has time to post
-    # using the old credential. The restarted service loads the staged token,
+    # Restart out-of-process after the current command result has enough time to
+    # post using the old credential. The restarted service loads the staged token,
     # and the server promotes it on first successful authentication.
-    restart_script = "Start-Sleep -Seconds 5; Restart-Service -Name 'SiteWatcherAgent' -Force"
+    restart_script = "Start-Sleep -Seconds 10; Restart-Service -Name 'SiteWatcherAgent' -Force"
     subprocess.Popen(
         ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", restart_script],
         stdin=subprocess.DEVNULL,
