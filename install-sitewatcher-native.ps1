@@ -2,11 +2,12 @@ param(
     [string]$InstallPath = "C:\SiteWatcher-Agent",
     [string]$ServerUrl = "https://monitoring.talondns.com",
     [string]$AgentToken = "",
+    [string]$EnrollmentKey = "__SITEWATCH_ENROLLMENT_KEY__",
     [string]$DiscoveryCidrs = ""
 )
 
 $ErrorActionPreference = "Stop"
-$InstallerBuild = "0.9.25-tightvnc-fix"
+$InstallerBuild = "0.9.40-remote-hands-enrollment"
 $TaskName = "SiteWatcher Agent"
 $ServiceName = "SiteWatcherAgent"
 $WinSwUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET4.exe"
@@ -25,6 +26,7 @@ function Require-Admin {
         $args = @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"' + $PSCommandPath + '"'),'-InstallPath',('"' + $InstallPath + '"'))
         if ($ServerUrl) { $args += @('-ServerUrl',('"' + $ServerUrl + '"')) }
         if ($AgentToken) { $args += @('-AgentToken',('"' + $AgentToken + '"')) }
+        if ($EnrollmentKey -and $EnrollmentKey -ne '__SITEWATCH_ENROLLMENT_KEY__') { $args += @('-EnrollmentKey',('"' + $EnrollmentKey + '"')) }
         if ($DiscoveryCidrs) { $args += @('-DiscoveryCidrs',('"' + $DiscoveryCidrs + '"')) }
         Start-Process powershell.exe -Verb RunAs -ArgumentList $args
         exit
@@ -92,6 +94,16 @@ try {
         $ServerUrl=Get-OrDefault $ExistingEnv 'SITEWATCH_SERVER_URL' $ServerUrl
         $AgentToken=Get-OrDefault $ExistingEnv 'SITEWATCH_AGENT_TOKEN' $AgentToken
         $DiscoveryCidrs=Get-OrDefault $ExistingEnv 'SITEWATCH_DISCOVERY_CIDRS' (Get-OrDefault $ExistingEnv 'DISCOVERY_CIDRS' $DiscoveryCidrs)
+    }
+    if(-not $AgentToken -and -not $IsUpgrade){
+        if(-not $EnrollmentKey -or $EnrollmentKey -eq '__SITEWATCH_ENROLLMENT_KEY__'){throw "No agent token was provided and this installer does not contain a SiteWatcher enrollment key. Download a fresh installer from $ServerUrl/downloads or supply -AgentToken."}
+        Write-Step "Enrolling this computer with SiteWatcher"
+        $enrollBody=@{enrollmentKey=$EnrollmentKey;hostname=$env:COMPUTERNAME}|ConvertTo-Json -Compress
+        try{$enrollment=Invoke-RestMethod -Method Post -Uri ($ServerUrl.TrimEnd('/')+'/api/agent/enroll') -ContentType 'application/json' -Body $enrollBody -TimeoutSec 30}catch{throw "Automatic SiteWatcher enrollment failed: $($_.Exception.Message)"}
+        $AgentToken=String($enrollment.token)
+        if(-not $AgentToken){throw "SiteWatcher enrollment did not return an agent token."}
+        Write-Host "Enrolled as $($enrollment.agent.name) in $($enrollment.holding.tenant) / $($enrollment.holding.location)." -ForegroundColor Green
+        Write-Host "A SiteWatcher administrator can now assign this agent to its final client/location remotely." -ForegroundColor Yellow
     }
     if(-not $AgentToken){throw "Agent token is required for a new installation. Existing upgrades preserve the current token."}
 
