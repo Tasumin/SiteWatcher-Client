@@ -31,27 +31,53 @@ VDD_REPAIR_COMMAND = "__SITEWATCH_VDD_REPAIR__"
 SCAN_PORTS = (22, 53, 80, 443, 554, 8000, 8080, 9000)
 BLOCKED_TOKENS = (";", "&&", "||", "|", ">", "<", "`", "$(", "@(")
 ALLOWED_PREFIXES = ("ping ","ping.exe ","tracert ","tracert.exe ","pathping ","pathping.exe ","nslookup ","nslookup.exe ","curl ","curl.exe ","arp ","arp.exe ","ipconfig","route print","route.exe print","netstat ","netstat.exe ","test-netconnection ","resolve-dnsname ","get-netipaddress","get-netroute","get-netadapter","get-nettcpconnection","get-netneighbor","get-dnsclient","get-dnsclientserveraddress","invoke-webrequest ","invoke-restmethod ")
+FULL_SHELLS = ("powershell_full", "cmd_full")
+OUTPUT_LIMIT = 200000
+
 
 def _allowed(command:str):
     text=command.strip(); lower=text.lower()
     if not text:return False,"Command is empty."
-    if any(t in text for t in BLOCKED_TOKENS):return False,"Command chaining, pipelines, redirection, and subexpressions are disabled in Remote Console."
+    if any(t in text for t in BLOCKED_TOKENS):return False,"Command chaining, pipelines, redirection, and subexpressions are disabled in Remote Console diagnostic mode."
     if "\n" in text or "\r" in text:return False,"Only one diagnostic command may be run at a time."
     if not any(lower==p.strip() or lower.startswith(p) for p in ALLOWED_PREFIXES):return False,"Command is not in the SiteWatcher diagnostic allowlist."
     return True,""
 
+
+def _execute(command, shell, timeout_seconds):
+    is_cmd = shell in ("cmd", "cmd_full")
+    argv = ["cmd.exe","/d","/s","/c",command] if is_cmd else ["powershell.exe","-NoLogo","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-Command",command]
+    try:
+        c=subprocess.run(argv,capture_output=True,text=True,errors="replace",timeout=timeout_seconds,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
+        return {"stdout":(c.stdout or "")[:OUTPUT_LIMIT],"stderr":(c.stderr or "")[:OUTPUT_LIMIT],"exitCode":c.returncode}
+    except subprocess.TimeoutExpired as e:
+        stdout=e.stdout.decode(errors="replace") if isinstance(e.stdout,bytes) else str(e.stdout or "")
+        stderr=e.stderr.decode(errors="replace") if isinstance(e.stderr,bytes) else str(e.stderr or "")
+        timeout_message=f"Command timed out after {timeout_seconds} seconds."
+        return {"stdout":stdout[:OUTPUT_LIMIT],"stderr":((stderr+"\n" if stderr else "")+timeout_message)[:OUTPUT_LIMIT],"exitCode":None,"timedOut":True}
+    except Exception as e:
+        return {"stdout":"","stderr":str(e),"exitCode":1}
+
+
 def _run(command,shell,timeout_seconds=60):
     ok,reason=_allowed(command)
     if not ok:return {"stdout":"","stderr":reason,"exitCode":None,"rejected":True}
-    argv=["cmd.exe","/d","/s","/c",command] if shell=="cmd" else ["powershell.exe","-NoLogo","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-Command",command]
-    try:
-        c=subprocess.run(argv,capture_output=True,text=True,errors="replace",timeout=timeout_seconds,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0));return {"stdout":(c.stdout or "")[:200000],"stderr":(c.stderr or "")[:200000],"exitCode":c.returncode}
-    except subprocess.TimeoutExpired as e:return {"stdout":str(e.stdout or "")[:200000],"stderr":"Command timed out after 60 seconds.","exitCode":None,"timedOut":True}
-    except Exception as e:return {"stdout":"","stderr":str(e),"exitCode":1}
+    return _execute(command,shell,timeout_seconds)
+
+
+def _run_full(command,shell,timeout_seconds=300):
+    if shell not in FULL_SHELLS:
+        return {"stdout":"","stderr":"Unsupported full-access shell.","exitCode":None,"rejected":True}
+    if not command.strip():
+        return {"stdout":"","stderr":"Command is empty.","exitCode":None,"rejected":True}
+    print(f"[console] FULL ADMIN execution shell={shell} chars={len(command)}",flush=True)
+    return _execute(command,shell,timeout_seconds)
+
 
 def _launch_self_update():
     from .update_launcher import launch_self_update
     return launch_self_update()
+
 
 def _scan_host(ip, ports):
     found=[]
@@ -68,6 +94,7 @@ def _scan_host(ip, ports):
     except Exception:hostname=""
     return {"ip":ip,"hostname":hostname,"ports":found}
 
+
 def _scan_network(cidr, ports=None):
     n=ipaddress.ip_network(cidr.strip(),strict=False)
     if n.version!=4:raise ValueError("Only IPv4 networks are supported.")
@@ -82,8 +109,10 @@ def _scan_network(cidr, ports=None):
         r=[x for x in pool.map(lambda ip:_scan_host(ip,scan_ports),[str(i) for i in n.hosts()]) if x]
     r.sort(key=lambda row:tuple(int(x) for x in row["ip"].split(".")));return r
 
+
 def _post_result(command_id,result):
     result["id"]=command_id;r=requests.post(SERVER+"/api/agent/commands",headers=HEADERS,json=result,timeout=20);r.raise_for_status()
+
 
 def _upload_log_bundle(command_id):
     z=create_agent_logs_zip()
@@ -93,6 +122,7 @@ def _upload_log_bundle(command_id):
         try:os.remove(z)
         except OSError:pass
 
+
 def _handle_vnc(command):
     if command==VNC_STATUS_COMMAND:r=get_tightvnc_status()
     elif command==VNC_INSTALL_COMMAND:r=install_tightvnc()
@@ -100,6 +130,7 @@ def _handle_vnc(command):
     elif command==VNC_UNINSTALL_COMMAND:r=uninstall_tightvnc()
     else:raise ValueError("Unknown TightVNC maintenance command")
     return {"stdout":json.dumps(r),"stderr":"","exitCode":0}
+
 
 def _handle_vdd(command):
     if command==VDD_STATUS_COMMAND:r=get_virtual_display_status()
@@ -109,6 +140,7 @@ def _handle_vdd(command):
     elif command==VDD_REPAIR_COMMAND:r=manage_virtual_display("repair")
     else:raise ValueError("Unknown virtual display maintenance command")
     return {"stdout":json.dumps(r),"stderr":"","exitCode":0}
+
 
 def remote_console_loop():
     time.sleep(3)
@@ -155,6 +187,9 @@ def remote_console_loop():
                     hosts=_scan_network(cidr,ports)
                     _post_result(command_id,{"stdout":json.dumps({"cidr":cidr,"ports":ports or list(SCAN_PORTS),"hosts":hosts}),"stderr":"","exitCode":0})
                 except Exception as e:_post_result(command_id,{"stdout":"","stderr":str(e),"exitCode":1})
+                continue
+            if shell in FULL_SHELLS:
+                _post_result(command_id,_run_full(command,shell,300))
                 continue
             _post_result(command_id,_run(command,shell))
         except Exception as e:print(f"[console] worker error: {e}",flush=True);time.sleep(5)
