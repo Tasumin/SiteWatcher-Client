@@ -11,11 +11,13 @@ import requests
 from .agent_logs import collect_agent_logs, create_agent_logs_zip
 from .tightvnc import get_tightvnc_status, install_tightvnc, restart_tightvnc, uninstall_tightvnc
 from .virtual_display_repair import get_virtual_display_status, manage_virtual_display
+from .rekey import apply_pending_rekey
 
 SERVER = os.environ["SITEWATCH_SERVER_URL"].rstrip("/")
 TOKEN = os.environ["SITEWATCH_AGENT_TOKEN"]
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 UPDATE_COMMAND = "__SITEWATCH_UPDATE_AGENT__"
+REKEY_COMMAND = "__SITEWATCH_REKEY__"
 SCAN_PREFIX = "__SITEWATCH_IP_SCAN__|"
 LOG_PREFIX = "__SITEWATCH_GET_LOGS__|"
 LOG_BUNDLE_COMMAND = "__SITEWATCH_DOWNLOAD_LOGS__"
@@ -157,6 +159,14 @@ def remote_console_loop():
                 try:_launch_self_update();_post_result(command_id,{"stdout":"SiteWatcher agent update launched as SYSTEM. See logs/update.log for detailed progress.","stderr":"","exitCode":0})
                 except Exception as e:_post_result(command_id,{"stdout":"","stderr":f"Unable to start SiteWatcher update: {e}","exitCode":1})
                 time.sleep(10);continue
+            if command==REKEY_COMMAND and shell=="system":
+                print(f"[agent] secure rekey job id={command_id[:8]}",flush=True)
+                try:
+                    result=apply_pending_rekey(SERVER,TOKEN)
+                    _post_result(command_id,{"stdout":json.dumps(result),"stderr":"","exitCode":0})
+                except Exception as e:
+                    _post_result(command_id,{"stdout":"","stderr":f"Agent rekey failed: {e}","exitCode":1})
+                continue
             if command in (VNC_STATUS_COMMAND,VNC_INSTALL_COMMAND,VNC_RESTART_COMMAND,VNC_UNINSTALL_COMMAND) and shell=="system":
                 print(f"[vnc] maintenance command={command} job id={command_id[:8]}",flush=True)
                 try:_post_result(command_id,_handle_vnc(command))
