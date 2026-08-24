@@ -20,7 +20,6 @@ VDD_MANAGER_URL = (
     "master/Community%20Scripts/virtual-driver-manager.ps1"
 )
 VDD_HARDWARE_ID = r"Root\MttVDD"
-VDD_FRIENDLY_NAMES = ("Virtual Display Driver", "IddSampleDriver Device HDR")
 
 
 def _ensure_dirs() -> None:
@@ -37,20 +36,9 @@ def _log(message: str) -> None:
 
 def _run_ps(script: str, timeout: int = 45) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [
-            "powershell.exe",
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
-        ],
-        capture_output=True,
-        text=True,
-        errors="replace",
-        timeout=timeout,
+        ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+         "-ExecutionPolicy", "Bypass", "-Command", script],
+        capture_output=True, text=True, errors="replace", timeout=timeout,
         creationflags=CREATE_NO_WINDOW,
     )
 
@@ -58,15 +46,9 @@ def _run_ps(script: str, timeout: int = 45) -> subprocess.CompletedProcess:
 def get_virtual_display_status() -> dict:
     if os.name != "nt":
         return {
-            "installed": False,
-            "enabled": False,
-            "healthy": False,
-            "status": "Unsupported",
-            "device": None,
-            "hardwareId": VDD_HARDWARE_ID,
-            "instanceId": None,
-            "problemCode": None,
-            "restartRequired": False,
+            "installed": False, "enabled": False, "healthy": False,
+            "status": "Unsupported", "device": None, "hardwareId": VDD_HARDWARE_ID,
+            "instanceId": None, "problemCode": None, "restartRequired": False,
             "message": "Virtual display management is supported only on Windows agents.",
         }
 
@@ -103,10 +85,8 @@ $restartRequired = ($problemCode -eq 14)
         completed = _run_ps(script, 45)
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("Virtual display status check timed out after 45 seconds.") from exc
-
     if completed.returncode != 0:
         raise RuntimeError((completed.stderr or completed.stdout or "Unable to query virtual display status.").strip())
-
     lines = [line.strip() for line in (completed.stdout or "").splitlines() if line.strip()]
     if not lines:
         raise RuntimeError("Virtual display status check returned no data.")
@@ -132,24 +112,34 @@ def _download_manager() -> None:
     if len(body) < 5000 or b"virtual-driver-manager" not in body.lower():
         raise RuntimeError("Downloaded virtual-driver-manager.ps1 failed a basic content validation check.")
 
-    # Upstream's manager currently looks only for an asset ending in x64.zip. Newer
-    # official releases may publish the signed driver as a *.Driver.Only.zip asset.
-    # Keep the upstream script and its GitHub release lookup, but add a compatibility
-    # fallback that still selects only an asset returned by the official repository.
     text = body.decode("utf-8-sig", errors="strict")
-    needle = '$asset = $releaseInfo.assets | Where-Object { $_.name -match "x64\\.zip$" } | Select-Object -First 1'
-    replacement = (
-        '$asset = $releaseInfo.assets | Where-Object { $_.name -match "x64\\.zip$" } | Select-Object -First 1\n'
+
+    asset_needle = '$asset = $releaseInfo.assets | Where-Object { $_.name -match "x64\\.zip$" } | Select-Object -First 1'
+    asset_replacement = (
+        '$asset = $releaseInfo.assets | Where-Object { $_.name -match "^VirtualDisplayDriver.*x64\\.zip$" } | Select-Object -First 1\n'
         '                if (-not $asset) {\n'
-        '                    $asset = $releaseInfo.assets | Where-Object { $_.name -match "Driver\\.Only\\.zip$" } | Select-Object -First 1\n'
-        '                    if ($asset) { Write-Log -Message ("Using official driver-only release asset: " + $asset.name) -Status \'Warning\' }\n'
+        '                    $asset = $releaseInfo.assets | Where-Object { $_.name -match "^VirtualDisplayDriver.*Driver\\.Only\\.zip$" } | Select-Object -First 1\n'
+        '                    if ($asset) { Write-Log -Message ("Using official Virtual Display Driver asset: " + $asset.name) -Status \'Warning\' }\n'
         '                }'
     )
-    if needle in text:
-        text = text.replace(needle, replacement, 1)
-        _log("Applied SiteWatcher compatibility fallback for official *.Driver.Only.zip VDD release assets.")
-    else:
-        _log("Official manager script no longer contains the known x64.zip selector; no compatibility patch was applied.")
+    if asset_needle not in text:
+        raise RuntimeError("Official virtual-driver-manager.ps1 changed its release asset selector; refusing to apply an unverified compatibility patch.")
+    text = text.replace(asset_needle, asset_replacement, 1)
+    _log("Applied SiteWatcher compatibility selector for official VirtualDisplayDriver release assets only.")
+
+    inf_needle = '& $devconExe install (Join-Path $tempDir "MttVDD.inf") "Root\\MttVDD"'
+    inf_replacement = (
+        '$vddInf = Get-ChildItem -Path $tempDir -Filter "MttVDD.inf" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1\n'
+        '            if (-not $vddInf) { throw "Downloaded Virtual Display Driver package did not contain MttVDD.inf." }\n'
+        '            Write-Log -Message ("Using Virtual Display Driver INF: " + $vddInf.FullName)\n'
+        '            & $devconExe install $vddInf.FullName "Root\\MttVDD"\n'
+        '            $devconExit = $LASTEXITCODE\n'
+        '            if ($devconExit -ne 0) { throw "DevCon failed to install Root\\MttVDD (exit $devconExit)." }'
+    )
+    if inf_needle not in text:
+        raise RuntimeError("Official virtual-driver-manager.ps1 changed its DevCon install command; refusing to apply an unverified compatibility patch.")
+    text = text.replace(inf_needle, inf_replacement, 1)
+    _log("Applied SiteWatcher recursive MttVDD.inf lookup and DevCon exit-code validation.")
 
     VDD_MANAGER_PATH.write_text(text, encoding="utf-8-sig", newline="\r\n")
     _log(f"Manager script saved to {VDD_MANAGER_PATH} ({len(body)} downloaded bytes)")
@@ -158,44 +148,27 @@ def _download_manager() -> None:
 def _run_manager(action: str, timeout: int = 300) -> tuple[int, str, str]:
     _download_manager()
     argv = [
-        "powershell.exe",
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(VDD_MANAGER_PATH),
-        "-Action",
-        action,
-        "-Silent",
-        "-Json",
+        "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+        "-ExecutionPolicy", "Bypass", "-File", str(VDD_MANAGER_PATH),
+        "-Action", action, "-Silent", "-Json",
     ]
     _log(f"Running virtual-driver-manager.ps1 -Action {action} -Silent -Json")
     try:
         completed = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=timeout,
-            creationflags=CREATE_NO_WINDOW,
+            argv, capture_output=True, text=True, errors="replace",
+            timeout=timeout, creationflags=CREATE_NO_WINDOW,
         )
     except subprocess.TimeoutExpired as exc:
-        stdout = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
-        stderr = (exc.stderr or "") if isinstance(exc.stderr, str) else ""
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
         _log(f"Manager action {action} timed out after {timeout} seconds.\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}")
         raise RuntimeError(
             f"Virtual Display Driver {action} timed out after {timeout} seconds. "
             f"See {VDD_LOG_PATH} on the agent for details."
         ) from exc
 
-    stdout = completed.stdout or ""
-    stderr = completed.stderr or ""
-    _log(
-        f"Manager action {action} exit={completed.returncode}\n"
-        f"STDOUT:\n{stdout}\nSTDERR:\n{stderr}"
-    )
+    stdout, stderr = completed.stdout or "", completed.stderr or ""
+    _log(f"Manager action {action} exit={completed.returncode}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}")
     return completed.returncode, stdout, stderr
 
 
@@ -206,28 +179,23 @@ def manage_virtual_display(action: str) -> dict:
         raise ValueError(f"Unsupported virtual display action: {action}")
 
     _ensure_dirs()
-    if action == "disable":
-        manager_action = "disable"
-    elif action == "enable":
-        manager_action = "enable"
-    else:
-        manager_action = "install"
-
+    manager_action = "disable" if action == "disable" else "enable" if action == "enable" else "install"
     before = get_virtual_display_status()
     _log(f"Requested action={action}; before={json.dumps(before, separators=(',', ':'))}")
 
     exit_code, stdout, stderr = _run_manager(manager_action)
     combined = f"{stdout}\n{stderr}".lower()
     after = get_virtual_display_status()
-
     restart_required = bool(after.get("restartRequired")) or any(
         phrase in combined
         for phrase in ("restart required", "reboot required", "restart the computer", "reboot the computer")
     )
-    after["restartRequired"] = restart_required
-    after["managerExitCode"] = exit_code
-    after["action"] = action
-    after["logPath"] = str(VDD_LOG_PATH)
+    after.update({
+        "restartRequired": restart_required,
+        "managerExitCode": exit_code,
+        "action": action,
+        "logPath": str(VDD_LOG_PATH),
+    })
 
     if exit_code != 0:
         detail = (stderr or stdout).strip()
