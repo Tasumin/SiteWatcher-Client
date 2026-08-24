@@ -8,6 +8,7 @@ import subprocess
 import time
 import urllib.request
 import zipfile
+import xml.etree.ElementTree as ET
 from ctypes import wintypes
 from datetime import datetime
 from pathlib import Path
@@ -20,12 +21,12 @@ VDD_TOOLS_DIR = AGENT_ROOT / "tools" / "vdd"
 VDD_LOG_DIR = AGENT_ROOT / "logs"
 VDD_LOG_PATH = VDD_LOG_DIR / "virtual-display.log"
 VDD_MANAGER_PATH = VDD_TOOLS_DIR / "virtual-driver-manager.ps1"
-VDD_MANAGER_URL = (
-    "https://raw.githubusercontent.com/VirtualDrivers/Virtual-Display-Driver/"
-    "master/Community%20Scripts/virtual-driver-manager.ps1"
-)
+VDD_MANAGER_URL = "https://raw.githubusercontent.com/VirtualDrivers/Virtual-Display-Driver/master/Community%20Scripts/virtual-driver-manager.ps1"
 VDD_RELEASE_API = "https://api.github.com/repos/VirtualDrivers/Virtual-Display-Driver/releases/latest"
 VDD_ASSET_NAME = "VirtualDisplayDriver-x86.Driver.Only.zip"
+VDD_SETTINGS_URL = "https://raw.githubusercontent.com/VirtualDrivers/Virtual-Display-Driver/master/Virtual%20Display%20Driver%20(HDR)/vdd_settings.xml"
+VDD_CONFIG_DIR = Path(r"C:\VirtualDisplayDriver")
+VDD_SETTINGS_PATH = VDD_CONFIG_DIR / "vdd_settings.xml"
 VDD_HARDWARE_ID = r"Root\MttVDD"
 
 
@@ -36,62 +37,70 @@ def _ensure_dirs() -> None:
 
 def _log(message: str) -> None:
     _ensure_dirs()
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with VDD_LOG_PATH.open("a", encoding="utf-8", errors="replace") as handle:
-        handle.write(f"{timestamp} {message.rstrip()}\n")
+        handle.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {message.rstrip()}\n")
 
 
-def _run_ps(script: str, timeout: int = 45) -> subprocess.CompletedProcess:
+def _run_ps(script: str, timeout: int = 60) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
-         "-ExecutionPolicy", "Bypass", "-Command", script],
-        capture_output=True, text=True, errors="replace", timeout=timeout,
-        creationflags=CREATE_NO_WINDOW,
+        ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+        capture_output=True, text=True, errors="replace", timeout=timeout, creationflags=CREATE_NO_WINDOW,
     )
 
 
 def get_virtual_display_status() -> dict:
     if os.name != "nt":
-        return {
-            "installed": False, "enabled": False, "healthy": False,
-            "status": "Unsupported", "device": None, "hardwareId": VDD_HARDWARE_ID,
-            "instanceId": None, "problemCode": None, "restartRequired": False,
-            "message": "Virtual display management is supported only on Windows agents.",
-        }
+        return {"installed": False, "enabled": False, "healthy": False, "status": "Unsupported", "device": None,
+                "hardwareId": VDD_HARDWARE_ID, "instanceId": None, "problemCode": None, "restartRequired": False,
+                "message": "Virtual display management is supported only on Windows agents."}
 
+    # The current VDD may enumerate as ROOT\\DISPLAY\\xxxx. Match its hardware IDs instead
+    # of assuming the instance ID itself starts with ROOT\\MTTVDD.
     script = r"""
-$devices = @(Get-PnpDevice -PresentOnly:$false -ErrorAction SilentlyContinue | Where-Object {
-    ($_.InstanceId -like 'ROOT\MTTVDD*') -or
-    ($_.FriendlyName -in @('Virtual Display Driver','IddSampleDriver Device HDR'))
-})
-$d = $devices | Sort-Object @{Expression={if($_.InstanceId -like 'ROOT\MTTVDD*'){0}else{1}}} | Select-Object -First 1
-if (-not $d) {
-    [pscustomobject]@{
-        installed=$false; enabled=$false; healthy=$false; status='Not installed';
-        device=$null; hardwareId='Root\MttVDD'; instanceId=$null; problemCode=$null;
-        restartRequired=$false; message='Virtual display device was not found.'
-    } | ConvertTo-Json -Compress
+$devices = @(Get-PnpDevice -PresentOnly:$false -ErrorAction SilentlyContinue)
+$candidates = @()
+foreach ($dev in $devices) {
+    $hardwareIds = @()
+    try {
+        $p = Get-PnpDeviceProperty -InstanceId $dev.InstanceId -KeyName 'DEVPKEY_Device_HardwareIds' -ErrorAction Stop
+        $hardwareIds = @($p.Data)
+    } catch {}
+    $hardwareMatch = $false
+    foreach ($id in $hardwareIds) {
+        if ([string]$id -match '(?i)(^|\\)MttVDD($|\\)') { $hardwareMatch = $true; break }
+    }
+    $nameMatch = ([string]$dev.FriendlyName -match '(?i)Virtual Display Driver|IddSampleDriver Device HDR|MttVDD')
+    if ($hardwareMatch -or $nameMatch) {
+        $candidates += [pscustomobject]@{ Device=$dev; HardwareIds=$hardwareIds; HardwareMatch=$hardwareMatch }
+    }
+}
+$selected = $candidates | Sort-Object @{Expression={if($_.HardwareMatch){0}else{1}}}, @{Expression={if([string]$_.Device.Status -eq 'OK'){0}else{1}}} | Select-Object -First 1
+if (-not $selected) {
+    [pscustomobject]@{installed=$false;enabled=$false;healthy=$false;status='Not installed';device=$null;hardwareId='Root\MttVDD';instanceId=$null;problemCode=$null;restartRequired=$false;message='Virtual display device was not found.'} | ConvertTo-Json -Compress
     exit 0
 }
+$d = $selected.Device
 $problemCode = $null
 try {
     $problem = Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName 'DEVPKEY_Device_ProblemCode' -ErrorAction Stop
     if ($null -ne $problem.Data) { $problemCode = [int]$problem.Data }
 } catch {}
+$matchedHardwareId = $selected.HardwareIds | Where-Object { [string]$_ -match '(?i)(^|\\)MttVDD($|\\)' } | Select-Object -First 1
+if (-not $matchedHardwareId) { $matchedHardwareId = 'Root\MttVDD' }
 $status = [string]$d.Status
-$enabled = ($status -eq 'OK')
+$enabled = ($status -eq 'OK' -and ($null -eq $problemCode -or $problemCode -eq 0))
 $restartRequired = ($problemCode -eq 14)
 [pscustomobject]@{
-    installed=$true; enabled=$enabled; healthy=($enabled -and -not $restartRequired); status=$status;
-    device=[string]$d.FriendlyName; hardwareId='Root\MttVDD'; instanceId=[string]$d.InstanceId;
-    problemCode=$problemCode; restartRequired=$restartRequired;
+    installed=$true;enabled=$enabled;healthy=($enabled -and -not $restartRequired);status=$status;
+    device=if($d.FriendlyName){[string]$d.FriendlyName}else{'Virtual Display Driver'};
+    hardwareId=[string]$matchedHardwareId;instanceId=[string]$d.InstanceId;problemCode=$problemCode;restartRequired=$restartRequired;
     message=if($restartRequired){'Windows reports that a reboot is required for the virtual display device.'}elseif($enabled){'Virtual display is installed and healthy.'}else{'Virtual display is installed but is not currently healthy/enabled.'}
 } | ConvertTo-Json -Compress
 """
     try:
-        completed = _run_ps(script, 45)
+        completed = _run_ps(script, 60)
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("Virtual display status check timed out after 45 seconds.") from exc
+        raise RuntimeError("Virtual display status check timed out after 60 seconds.") from exc
     if completed.returncode != 0:
         raise RuntimeError((completed.stderr or completed.stdout or "Unable to query virtual display status.").strip())
     lines = [line.strip() for line in (completed.stdout or "").splitlines() if line.strip()]
@@ -120,23 +129,16 @@ def _download_manager() -> None:
 
 def _run_manager(action: str, timeout: int = 180) -> tuple[int, str, str]:
     _download_manager()
-    argv = [
-        "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
-        "-ExecutionPolicy", "Bypass", "-File", str(VDD_MANAGER_PATH),
-        "-Action", action, "-Silent", "-Json",
-    ]
+    argv = ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+            str(VDD_MANAGER_PATH), "-Action", action, "-Silent", "-Json"]
     _log(f"Running virtual-driver-manager.ps1 -Action {action} -Silent -Json")
     try:
-        completed = subprocess.run(argv, capture_output=True, text=True, errors="replace",
-                                   timeout=timeout, creationflags=CREATE_NO_WINDOW)
+        c = subprocess.run(argv, capture_output=True, text=True, errors="replace", timeout=timeout, creationflags=CREATE_NO_WINDOW)
     except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
-        _log(f"Manager action {action} timed out after {timeout} seconds.\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}")
         raise RuntimeError(f"Virtual Display Driver {action} timed out after {timeout} seconds. See {VDD_LOG_PATH}.") from exc
-    stdout, stderr = completed.stdout or "", completed.stderr or ""
-    _log(f"Manager action {action} exit={completed.returncode}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}")
-    return completed.returncode, stdout, stderr
+    stdout, stderr = c.stdout or "", c.stderr or ""
+    _log(f"Manager action {action} exit={c.returncode}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}")
+    return c.returncode, stdout, stderr
 
 
 def _download_official_driver() -> Path:
@@ -148,13 +150,9 @@ def _download_official_driver() -> Path:
             release = json.loads(response.read().decode("utf-8"))
     except Exception as exc:
         raise RuntimeError(f"Unable to query the official Virtual Display Driver release: {exc}") from exc
-
     asset = next((item for item in release.get("assets", []) if item.get("name") == VDD_ASSET_NAME), None)
-    if not asset or not str(asset.get("browser_download_url", "")).startswith(
-        "https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/"
-    ):
+    if not asset or not str(asset.get("browser_download_url", "")).startswith("https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/"):
         raise RuntimeError(f"Official release did not contain expected asset {VDD_ASSET_NAME}.")
-
     package_dir = VDD_TOOLS_DIR / "package"
     if package_dir.exists():
         shutil.rmtree(package_dir, ignore_errors=True)
@@ -165,20 +163,41 @@ def _download_official_driver() -> Path:
     try:
         with urllib.request.urlopen(req, timeout=60) as response, zip_path.open("wb") as handle:
             shutil.copyfileobj(response, handle)
-    except Exception as exc:
-        raise RuntimeError(f"Unable to download official VDD driver package: {exc}") from exc
-
-    try:
         with zipfile.ZipFile(zip_path) as archive:
             archive.extractall(package_dir)
     except Exception as exc:
-        raise RuntimeError(f"Unable to extract official VDD driver package: {exc}") from exc
-
+        raise RuntimeError(f"Unable to download/extract official VDD driver package: {exc}") from exc
     infs = list(package_dir.rglob("MttVDD.inf"))
     if len(infs) != 1:
         raise RuntimeError(f"Expected exactly one MttVDD.inf in the official package, found {len(infs)}.")
     _log(f"Official VDD INF extracted to {infs[0]}")
     return infs[0]
+
+
+def _configure_single_monitor() -> None:
+    VDD_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    _log(f"Downloading official VDD settings from {VDD_SETTINGS_URL}")
+    req = urllib.request.Request(VDD_SETTINGS_URL, headers={"User-Agent": "SiteWatcher-Agent/VirtualDisplaySettings"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            body = response.read()
+        root = ET.fromstring(body.decode("utf-8-sig"))
+    except Exception as exc:
+        raise RuntimeError(f"Unable to download/parse the official VDD settings file: {exc}") from exc
+    count = root.find("./monitors/count")
+    if count is None:
+        monitors = root.find("./monitors") or ET.SubElement(root, "monitors")
+        count = ET.SubElement(monitors, "count")
+    count.text = "1"
+    ET.ElementTree(root).write(VDD_SETTINGS_PATH, encoding="utf-8", xml_declaration=True)
+    if os.name == "nt":
+        import winreg
+        key = winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\MikeTheTech\VirtualDisplayDriver", 0, winreg.KEY_SET_VALUE)
+        try:
+            winreg.SetValueEx(key, "VDDPATH", 0, winreg.REG_SZ, str(VDD_CONFIG_DIR))
+        finally:
+            winreg.CloseKey(key)
+    _log(f"Configured Virtual Display Driver for exactly one monitor at {VDD_SETTINGS_PATH}")
 
 
 def _trust_official_catalog(inf: Path) -> None:
@@ -188,32 +207,17 @@ def _trust_official_catalog(inf: Path) -> None:
         if len(matches) != 1:
             raise RuntimeError(f"Expected exactly one mttvdd.cat beside the official VDD INF, found {len(matches)}.")
         cat = matches[0]
-
     cat_literal = str(cat).replace("'", "''")
     script = rf"""
-$ErrorActionPreference = 'Stop'
-$cat = '{cat_literal}'
-$bytes = [System.IO.File]::ReadAllBytes($cat)
-$certs = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-$certs.Import($bytes)
-if ($certs.Count -lt 1) {{ throw 'No signer certificates were found in mttvdd.cat.' }}
-$store = New-Object System.Security.Cryptography.X509Certificates.X509Store('TrustedPublisher','LocalMachine')
-$store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-try {{
-    foreach ($cert in $certs) {{
-        $existing = $store.Certificates | Where-Object {{ $_.Thumbprint -eq $cert.Thumbprint }} | Select-Object -First 1
-        if (-not $existing) {{ $store.Add($cert) }}
-        Write-Output ("TrustedPublisher certificate: " + $cert.Subject + " [" + $cert.Thumbprint + "]")
-    }}
-}} finally {{
-    $store.Close()
-}}
+$ErrorActionPreference='Stop';$cat='{cat_literal}';$bytes=[IO.File]::ReadAllBytes($cat)
+$certs=New-Object Security.Cryptography.X509Certificates.X509Certificate2Collection;$certs.Import($bytes)
+if($certs.Count -lt 1){{throw 'No signer certificates were found in mttvdd.cat.'}}
+$store=New-Object Security.Cryptography.X509Certificates.X509Store('TrustedPublisher','LocalMachine')
+$store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+try{{foreach($cert in $certs){{$existing=$store.Certificates|Where-Object{{$_.Thumbprint -eq $cert.Thumbprint}}|Select-Object -First 1;if(-not $existing){{$store.Add($cert)}};Write-Output ('TrustedPublisher certificate: '+$cert.Subject+' ['+$cert.Thumbprint+']')}}}}finally{{$store.Close()}}
 """
     _log(f"Importing signer certificate(s) from official VDD catalog {cat} into LocalMachine\\TrustedPublisher")
-    try:
-        result = _run_ps(script, 60)
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("Timed out while trusting the official Virtual Display Driver catalog signer.") from exc
+    result = _run_ps(script, 60)
     _log(f"Certificate trust exit={result.returncode}\nSTDOUT:\n{result.stdout or ''}\nSTDERR:\n{result.stderr or ''}")
     if result.returncode != 0:
         raise RuntimeError((result.stderr or result.stdout or "Unable to trust the official VDD catalog signer.").strip())
@@ -223,12 +227,11 @@ def _run_pnputil(args: list[str], timeout: int = 120) -> subprocess.CompletedPro
     cmd = ["pnputil.exe", *args]
     _log("Running: " + subprocess.list2cmdline(cmd))
     try:
-        completed = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
-                                   timeout=timeout, creationflags=CREATE_NO_WINDOW)
+        c = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout, creationflags=CREATE_NO_WINDOW)
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"PnPUtil timed out after {timeout} seconds: {' '.join(args)}") from exc
-    _log(f"PnPUtil exit={completed.returncode}\nSTDOUT:\n{completed.stdout or ''}\nSTDERR:\n{completed.stderr or ''}")
-    return completed
+    _log(f"PnPUtil exit={c.returncode}\nSTDOUT:\n{c.stdout or ''}\nSTDERR:\n{c.stderr or ''}")
+    return c
 
 
 class _GUID(ctypes.Structure):
@@ -244,68 +247,60 @@ def _display_class_guid() -> _GUID:
 
 
 def _create_root_device() -> None:
-    if os.name != "nt":
-        raise RuntimeError("SetupAPI root device creation is available only on Windows.")
     setupapi = ctypes.WinDLL("setupapi", use_last_error=True)
     guid = _display_class_guid()
-    devinfo = _SP_DEVINFO_DATA()
-    devinfo.cbSize = ctypes.sizeof(_SP_DEVINFO_DATA)
-
-    setupapi.SetupDiCreateDeviceInfoList.argtypes = [ctypes.POINTER(_GUID), wintypes.HWND]
-    setupapi.SetupDiCreateDeviceInfoList.restype = wintypes.HANDLE
-    setupapi.SetupDiCreateDeviceInfoW.argtypes = [wintypes.HANDLE, wintypes.LPCWSTR, ctypes.POINTER(_GUID), wintypes.LPCWSTR, wintypes.HWND, wintypes.DWORD, ctypes.POINTER(_SP_DEVINFO_DATA)]
-    setupapi.SetupDiCreateDeviceInfoW.restype = wintypes.BOOL
-    setupapi.SetupDiSetDeviceRegistryPropertyW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_SP_DEVINFO_DATA), wintypes.DWORD, ctypes.POINTER(ctypes.c_ubyte), wintypes.DWORD]
-    setupapi.SetupDiSetDeviceRegistryPropertyW.restype = wintypes.BOOL
-    setupapi.SetupDiCallClassInstaller.argtypes = [wintypes.DWORD, wintypes.HANDLE, ctypes.POINTER(_SP_DEVINFO_DATA)]
-    setupapi.SetupDiCallClassInstaller.restype = wintypes.BOOL
-    setupapi.SetupDiDestroyDeviceInfoList.argtypes = [wintypes.HANDLE]
-    setupapi.SetupDiDestroyDeviceInfoList.restype = wintypes.BOOL
-
+    devinfo = _SP_DEVINFO_DATA(); devinfo.cbSize = ctypes.sizeof(_SP_DEVINFO_DATA)
+    setupapi.SetupDiCreateDeviceInfoList.argtypes = [ctypes.POINTER(_GUID), wintypes.HWND]; setupapi.SetupDiCreateDeviceInfoList.restype = wintypes.HANDLE
+    setupapi.SetupDiCreateDeviceInfoW.argtypes = [wintypes.HANDLE, wintypes.LPCWSTR, ctypes.POINTER(_GUID), wintypes.LPCWSTR, wintypes.HWND, wintypes.DWORD, ctypes.POINTER(_SP_DEVINFO_DATA)]; setupapi.SetupDiCreateDeviceInfoW.restype = wintypes.BOOL
+    setupapi.SetupDiSetDeviceRegistryPropertyW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_SP_DEVINFO_DATA), wintypes.DWORD, ctypes.POINTER(ctypes.c_ubyte), wintypes.DWORD]; setupapi.SetupDiSetDeviceRegistryPropertyW.restype = wintypes.BOOL
+    setupapi.SetupDiCallClassInstaller.argtypes = [wintypes.DWORD, wintypes.HANDLE, ctypes.POINTER(_SP_DEVINFO_DATA)]; setupapi.SetupDiCallClassInstaller.restype = wintypes.BOOL
+    setupapi.SetupDiDestroyDeviceInfoList.argtypes = [wintypes.HANDLE]; setupapi.SetupDiDestroyDeviceInfoList.restype = wintypes.BOOL
     handle = setupapi.SetupDiCreateDeviceInfoList(ctypes.byref(guid), None)
-    invalid = ctypes.c_void_p(-1).value
-    if handle == invalid:
+    if handle == ctypes.c_void_p(-1).value:
         raise ctypes.WinError(ctypes.get_last_error())
     try:
-        DICD_GENERATE_ID = 0x00000001
-        SPDRP_HARDWAREID = 0x00000001
-        DIF_REGISTERDEVICE = 0x00000019
-        if not setupapi.SetupDiCreateDeviceInfoW(handle, "Display", ctypes.byref(guid), "SiteWatcher Virtual Display", None, DICD_GENERATE_ID, ctypes.byref(devinfo)):
+        if not setupapi.SetupDiCreateDeviceInfoW(handle, "Display", ctypes.byref(guid), "SiteWatcher Virtual Display", None, 1, ctypes.byref(devinfo)):
             raise ctypes.WinError(ctypes.get_last_error())
         hardware_ids = (VDD_HARDWARE_ID + "\0\0").encode("utf-16-le")
         buffer = (ctypes.c_ubyte * len(hardware_ids)).from_buffer_copy(hardware_ids)
-        if not setupapi.SetupDiSetDeviceRegistryPropertyW(handle, ctypes.byref(devinfo), SPDRP_HARDWAREID, buffer, len(hardware_ids)):
+        if not setupapi.SetupDiSetDeviceRegistryPropertyW(handle, ctypes.byref(devinfo), 1, buffer, len(hardware_ids)):
             raise ctypes.WinError(ctypes.get_last_error())
-        if not setupapi.SetupDiCallClassInstaller(DIF_REGISTERDEVICE, handle, ctypes.byref(devinfo)):
+        if not setupapi.SetupDiCallClassInstaller(0x19, handle, ctypes.byref(devinfo)):
             raise ctypes.WinError(ctypes.get_last_error())
         _log("Created Root\\MttVDD device node using native Windows SetupAPI.")
     finally:
         setupapi.SetupDiDestroyDeviceInfoList(handle)
 
 
+def _restart_vdd_device(instance_id: str | None) -> None:
+    if not instance_id:
+        return
+    result = _run_pnputil(["/restart-device", instance_id], 60)
+    if result.returncode in (0, 3010):
+        _log(f"Restarted Virtual Display Driver device {instance_id} after configuration change.")
+    else:
+        _log(f"Warning: PnPUtil could not restart VDD instance {instance_id}; exit={result.returncode}")
+
+
 def _native_install() -> tuple[int, str, str]:
     inf = _download_official_driver()
     output: list[str] = []
-
+    _configure_single_monitor()
     _trust_official_catalog(inf)
-
-    stage = _run_pnputil(["/add-driver", str(inf), "/install"])
-    output.append(stage.stdout or "")
+    stage = _run_pnputil(["/add-driver", str(inf), "/install"]); output.append(stage.stdout or "")
     if stage.returncode not in (0, 3010):
         return stage.returncode, "\n".join(output), stage.stderr or ""
-
     status = get_virtual_display_status()
     if not status.get("installed"):
-        _create_root_device()
-        time.sleep(2)
-
-    scan = _run_pnputil(["/scan-devices"])
-    output.append(scan.stdout or "")
-    bind = _run_pnputil(["/add-driver", str(inf), "/install"])
-    output.append(bind.stdout or "")
+        _create_root_device(); time.sleep(2)
+    scan = _run_pnputil(["/scan-devices"]); output.append(scan.stdout or "")
+    bind = _run_pnputil(["/add-driver", str(inf), "/install"]); output.append(bind.stdout or "")
+    time.sleep(2)
+    status = get_virtual_display_status()
+    if status.get("installed"):
+        _restart_vdd_device(status.get("instanceId")); time.sleep(2)
     reboot = stage.returncode == 3010 or bind.returncode == 3010
-    rc = 3010 if reboot else bind.returncode
-    return rc, "\n".join(output), "\n".join(filter(None, [stage.stderr, scan.stderr, bind.stderr]))
+    return (3010 if reboot else bind.returncode), "\n".join(output), "\n".join(filter(None, [stage.stderr, scan.stderr, bind.stderr]))
 
 
 def manage_virtual_display(action: str) -> dict:
@@ -313,73 +308,41 @@ def manage_virtual_display(action: str) -> dict:
         raise RuntimeError("Virtual display management is supported only on Windows agents.")
     if action not in {"install", "enable", "disable", "repair"}:
         raise ValueError(f"Unsupported virtual display action: {action}")
-
     _ensure_dirs()
     before = get_virtual_display_status()
     _log(f"Requested action={action}; before={json.dumps(before, separators=(',', ':'))}")
-
     if action in {"install", "repair"}:
         _log("Using headless native SetupAPI + PnPUtil installation path; DevCon is not used.")
         exit_code, stdout, stderr = _native_install()
     else:
         exit_code, stdout, stderr = _run_manager(action)
-
-    combined = f"{stdout}\n{stderr}".lower()
-    time.sleep(2)
+    combined = f"{stdout}\n{stderr}".lower(); time.sleep(2)
     after = get_virtual_display_status()
-    restart_required = bool(after.get("restartRequired")) or exit_code == 3010 or any(
-        phrase in combined for phrase in ("restart required", "reboot required", "restart the computer", "reboot the computer")
-    )
+    restart_required = bool(after.get("restartRequired")) or exit_code == 3010 or any(p in combined for p in ("restart required", "reboot required", "restart the computer", "reboot the computer"))
     after.update({"restartRequired": restart_required, "managerExitCode": exit_code, "action": action, "logPath": str(VDD_LOG_PATH)})
-
     if exit_code not in (0, 3010):
         detail = (stderr or stdout).strip()
-        raise RuntimeError(
-            f"Virtual Display Driver {action} failed with code {exit_code}. "
-            f"{detail[:2000] or 'No additional output was returned.'} See {VDD_LOG_PATH} on the agent for details."
-        )
-
+        raise RuntimeError(f"Virtual Display Driver {action} failed with code {exit_code}. {detail[:2000] or 'No additional output was returned.'} See {VDD_LOG_PATH} on the agent for details.")
     if action in {"install", "repair"} and not after.get("installed"):
         if restart_required:
-            after["message"] = "Driver installation completed, but Windows must reboot before Root\\MttVDD becomes available."
-            _log(after["message"])
-            return after
-        raise RuntimeError(
-            "PnPUtil completed, but Root\\MttVDD was not detected afterward. "
-            f"See {VDD_LOG_PATH} on the agent for details."
-        )
-
+            after["message"] = "Driver installation completed, but Windows must reboot before the virtual display becomes available."; return after
+        raise RuntimeError(f"PnPUtil completed, but the Virtual Display Driver device was not detected afterward. See {VDD_LOG_PATH} on the agent for details.")
     if action == "enable" and not after.get("enabled"):
         if restart_required:
-            after["message"] = "Enable completed, but Windows must reboot before the virtual display becomes healthy."
-            _log(after["message"])
-            return after
-        raise RuntimeError(
-            f"Virtual display enable completed, but device status is {after.get('status') or 'unknown'}. See {VDD_LOG_PATH}."
-        )
-
+            after["message"] = "Enable completed, but Windows must reboot before the virtual display becomes healthy."; return after
+        raise RuntimeError(f"Virtual display enable completed, but device status is {after.get('status') or 'unknown'}. See {VDD_LOG_PATH}.")
     if action == "disable":
-        after["message"] = "Virtual display is disabled." if after.get("installed") else "Virtual display is not installed."
-        _log(after["message"])
-        return after
-
+        after["message"] = "Virtual display is disabled." if after.get("installed") else "Virtual display is not installed."; _log(after["message"]); return after
     if after.get("enabled") and not restart_required:
         try:
-            vnc_status = restart_tightvnc()
-            after["tightVncRestarted"] = True
-            after["tightVncReady"] = bool(vnc_status.get("ready"))
-            _log("TightVNC service restarted after successful virtual display operation.")
+            vnc_status = restart_tightvnc(); after["tightVncRestarted"] = True; after["tightVncReady"] = bool(vnc_status.get("ready")); _log("TightVNC service restarted after successful virtual display operation.")
         except Exception as exc:
-            after["tightVncRestarted"] = False
-            after["tightVncWarning"] = str(exc)
-            _log(f"Virtual display succeeded, but TightVNC restart failed: {exc}")
-
+            after["tightVncRestarted"] = False; after["tightVncWarning"] = str(exc); _log(f"Virtual display succeeded, but TightVNC restart failed: {exc}")
     if restart_required:
         after["message"] = "Virtual display operation completed, but Windows must be rebooted before the device is ready."
     elif after.get("healthy"):
-        after["message"] = "Virtual display is installed and healthy."
+        after["message"] = "Virtual display is installed and healthy (1 virtual monitor configured)."
     else:
         after["message"] = f"Virtual display is installed, but device status is {after.get('status') or 'unknown'}."
-
     _log(f"Completed action={action}; after={json.dumps(after, separators=(',', ':'))}")
     return after
