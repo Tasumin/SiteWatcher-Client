@@ -17,8 +17,6 @@ def load_env(root: Path) -> None:
 
     data_dir = root / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
-    # Keep the existing environment variable names and filenames for backward
-    # compatibility with deployed agents and existing local queue databases.
     os.environ.setdefault("SITEWATCH_DB", str(data_dir / "queue.db"))
     os.environ.setdefault("SITEWATCH_LOCK_FILE", str(data_dir / "sitewatch-agent.lock"))
 
@@ -35,25 +33,22 @@ def main() -> None:
     from .main import main as agent_main
     from . import remote_console
     from .host_monitor import host_monitor_loop
+    from .nvr_streams import nvr_stream_loop
     from .update_launcher import launch_self_update
 
     remote_console._launch_self_update = launch_self_update
 
-    console_thread = threading.Thread(
-        target=remote_console.remote_console_loop,
-        name="nodevyu-remote-console",
-        daemon=True,
-    )
+    console_thread = threading.Thread(target=remote_console.remote_console_loop, name="nodevyu-remote-console", daemon=True)
     console_thread.start()
     print("[startup] NodeVyu worker remote-console started", flush=True)
 
-    host_thread = threading.Thread(
-        target=host_monitor_loop,
-        name="nodevyu-host-monitor",
-        daemon=True,
-    )
+    host_thread = threading.Thread(target=host_monitor_loop, name="nodevyu-host-monitor", daemon=True)
     host_thread.start()
     print("[startup] NodeVyu worker host-monitor started", flush=True)
+
+    nvr_thread = threading.Thread(target=nvr_stream_loop, name="nodevyu-nvr-streams", daemon=True)
+    nvr_thread.start()
+    print("[startup] NodeVyu worker nvr-streams started", flush=True)
 
     agent_main()
 
