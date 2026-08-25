@@ -6,7 +6,7 @@ from pathlib import Path
 def load_env(root: Path) -> None:
     env_file = root / ".env"
     if not env_file.exists():
-        raise RuntimeError(f"Missing SiteWatcher configuration: {env_file}")
+        raise RuntimeError(f"Missing NodeVyu configuration: {env_file}")
 
     for raw in env_file.read_text(encoding="utf-8-sig").splitlines():
         line = raw.strip()
@@ -17,6 +17,8 @@ def load_env(root: Path) -> None:
 
     data_dir = root / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
+    # Keep the existing environment variable names and filenames for backward
+    # compatibility with deployed agents and existing local queue databases.
     os.environ.setdefault("SITEWATCH_DB", str(data_dir / "queue.db"))
     os.environ.setdefault("SITEWATCH_LOCK_FILE", str(data_dir / "sitewatch-agent.lock"))
 
@@ -39,19 +41,19 @@ def main() -> None:
 
     console_thread = threading.Thread(
         target=remote_console.remote_console_loop,
-        name="sitewatch-remote-console",
+        name="nodevyu-remote-console",
         daemon=True,
     )
     console_thread.start()
-    print("[startup] worker remote-console started", flush=True)
+    print("[startup] NodeVyu worker remote-console started", flush=True)
 
     host_thread = threading.Thread(
         target=host_monitor_loop,
-        name="sitewatch-host-monitor",
+        name="nodevyu-host-monitor",
         daemon=True,
     )
     host_thread.start()
-    print("[startup] worker host-monitor started", flush=True)
+    print("[startup] NodeVyu worker host-monitor started", flush=True)
 
     agent_main()
 
