@@ -17,8 +17,8 @@ def api(method: str, path: str, **kwargs):
     return requests.request(method, SERVER + path, headers=HEADERS, timeout=25, **kwargs)
 
 
-def _snapshot_payload(device_id: str, stream: dict, snapshot: dict):
-    return {
+def _snapshot_payload(device_id: str, stream: dict, snapshot: dict, validation_requested_at=None):
+    payload = {
         "deviceId": device_id,
         "streamId": stream["id"],
         "capturedAt": datetime.now(timezone.utc).isoformat(),
@@ -27,6 +27,26 @@ def _snapshot_payload(device_id: str, stream: dict, snapshot: dict):
         "width": snapshot.get("width"),
         "height": snapshot.get("height"),
     }
+    if validation_requested_at:
+        payload["validationRequestedAt"] = validation_requested_at
+    return payload
+
+
+def _capture(device, stream, url, username, password, timeout):
+    fake_device = {
+        "id": f"nvr-{stream['id']}",
+        "name": stream.get("name") or f"Channel {stream.get('channel')}",
+        "type": "camera",
+        "host": device.get("host"),
+        "timeoutSeconds": timeout,
+        "checks": [{
+            "type": "rtsp",
+            "url": url,
+            "username": username,
+            "password": password,
+        }],
+    }
+    return capture_snapshot(fake_device)
 
 
 def nvr_stream_loop():
@@ -47,9 +67,14 @@ def nvr_stream_loop():
                 timeout = max(1, int(device.get("timeoutSeconds", 8)))
                 for stream in streams:
                     sid = stream.get("id")
-                    url = stream.get("url")
                     validation_requested_at = stream.get("validationRequestedAt")
+                    draft = stream.get("validationDraft") or {}
                     force_validation = bool(validation_requested_at)
+                    preview_validation = bool(force_validation and draft)
+                    url = draft.get("url") if preview_validation else stream.get("url")
+                    username = draft.get("username") if preview_validation else stream.get("username")
+                    password = draft.get("password") if preview_validation else stream.get("password")
+                    channel = draft.get("channel") if preview_validation else stream.get("channel")
                     if not sid or not url:
                         continue
                     if not force_validation and now < next_due.get(sid, 0):
@@ -57,20 +82,21 @@ def nvr_stream_loop():
                     next_due[sid] = now + interval
                     started = time.monotonic()
                     if force_validation:
-                        print(f"[nvr] validating {stream.get('name')} channel={stream.get('channel')} request={validation_requested_at}", flush=True)
-                    ok, latency, error = rtsp(url, stream.get("username"), stream.get("password"), timeout)
+                        print(f"[nvr] validating {stream.get('name')} channel={channel} request={validation_requested_at} preview={preview_validation}", flush=True)
+                    ok, latency, error = rtsp(url, username, password, timeout)
                     message = "RTSP stream available" if ok else (error or "RTSP stream unavailable")
                     payload = {
                         "deviceId": device["id"],
                         "streamId": sid,
                         "streamName": stream.get("name"),
-                        "channel": stream.get("channel"),
+                        "channel": channel,
                         "observedAt": datetime.now(timezone.utc).isoformat(),
                         "overallOk": ok,
                         "latencyMs": latency,
                         "message": message,
                         "url": url,
                         "validationRequestedAt": validation_requested_at,
+                        "previewValidation": preview_validation,
                     }
                     try:
                         r = api("POST", "/api/agent/nvr-stream-results", json=payload)
@@ -80,24 +106,23 @@ def nvr_stream_loop():
                             print(f"[nvr] validation {stream.get('name')}: {'PASS' if ok else 'FAIL'} {message}", flush=True)
                     except Exception as exc:
                         print(f"[nvr] {stream.get('name')}: result upload failed: {exc}", flush=True)
-                    print(f"[nvr] {stream.get('name')} channel={stream.get('channel')} {'UP' if ok else 'DOWN'} latency={latency}ms", flush=True)
 
-                    if ok and now - last_snapshot.get(sid, 0) >= SNAPSHOT_INTERVAL:
-                        fake_device = {
-                            "id": f"nvr-{sid}",
-                            "name": stream.get("name") or f"Channel {stream.get('channel')}",
-                            "type": "camera",
-                            "host": device.get("host"),
-                            "timeoutSeconds": timeout,
-                            "checks": [{
-                                "type": "rtsp",
-                                "url": url,
-                                "username": stream.get("username"),
-                                "password": stream.get("password"),
-                            }],
-                        }
+                    # A manual/draft validation always attempts to capture a real frame immediately.
+                    if ok and force_validation:
                         try:
-                            snapshot = capture_snapshot(fake_device)
+                            snapshot = _capture(device, stream, url, username, password, timeout)
+                            if snapshot:
+                                sr = api("POST", "/api/agent/nvr-stream-snapshot", json=_snapshot_payload(device["id"], stream, snapshot, validation_requested_at))
+                                if sr.ok:
+                                    print(f"[nvr] validation preview captured {stream.get('name')} {snapshot.get('width')}x{snapshot.get('height')}", flush=True)
+                                else:
+                                    print(f"[nvr] {stream.get('name')}: validation snapshot HTTP {sr.status_code}: {sr.text[:250]}", flush=True)
+                        except Exception as exc:
+                            print(f"[nvr] {stream.get('name')}: validation snapshot failed: {exc}", flush=True)
+
+                    if ok and not force_validation and now - last_snapshot.get(sid, 0) >= SNAPSHOT_INTERVAL:
+                        try:
+                            snapshot = _capture(device, stream, url, username, password, timeout)
                             if snapshot:
                                 sr = api("POST", "/api/agent/nvr-stream-snapshot", json=_snapshot_payload(device["id"], stream, snapshot))
                                 if sr.ok:
@@ -111,4 +136,4 @@ def nvr_stream_loop():
                         print(f"[nvr] {stream.get('name')}: cycle took {elapsed:.1f}s", flush=True)
         except Exception as exc:
             print(f"[nvr] worker error: {exc}", flush=True)
-        time.sleep(10)
+        time.sleep(5)
