@@ -1,6 +1,5 @@
 import os
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -10,10 +9,10 @@ import win32service
 import win32serviceutil
 
 
-class SiteWatcherService(win32serviceutil.ServiceFramework):
-    _svc_name_ = "SiteWatcherAgent"
-    _svc_display_name_ = "SiteWatcher Agent"
-    _svc_description_ = "SiteWatcher native Windows monitoring agent"
+class NodeVyuService(win32serviceutil.ServiceFramework):
+    _svc_name_ = "NodeVyuAgent"
+    _svc_display_name_ = "NodeVyu Agent"
+    _svc_description_ = "NodeVyu native Windows monitoring agent"
 
     def __init__(self, args):
         super().__init__(args)
@@ -27,7 +26,7 @@ class SiteWatcherService(win32serviceutil.ServiceFramework):
     def _load_env(self):
         env_file = self.root / ".env"
         if not env_file.exists():
-            raise RuntimeError(f"Missing SiteWatcher configuration: {env_file}")
+            raise RuntimeError(f"Missing NodeVyu configuration: {env_file}")
         for raw in env_file.read_text(encoding="utf-8-sig").splitlines():
             line = raw.strip()
             if not line or line.startswith("#") or "=" not in line:
@@ -46,13 +45,13 @@ class SiteWatcherService(win32serviceutil.ServiceFramework):
     def _python_executable(self):
         python = self.root / ".venv" / "Scripts" / "python.exe"
         if not python.exists():
-            raise RuntimeError(f"SiteWatcher Python environment is missing: {python}")
+            raise RuntimeError(f"NodeVyu Python environment is missing: {python}")
         return str(python)
 
     def _start_agent(self):
         self._load_env()
         log_handle = open(self.log_path, "a", encoding="utf-8", buffering=1)
-        log_handle.write(f"\n===== SiteWatcher Windows Service start {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n")
+        log_handle.write(f"\n===== NodeVyu Windows Service start {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n")
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         self.process = subprocess.Popen(
             [self._python_executable(), "-u", "-m", "sitewatch_agent.main"],
@@ -78,7 +77,7 @@ class SiteWatcherService(win32serviceutil.ServiceFramework):
                     pass
 
     def SvcDoRun(self):
-        servicemanager.LogInfoMsg("SiteWatcher Agent service starting")
+        servicemanager.LogInfoMsg("NodeVyu Agent service starting")
         try:
             self._start_agent()
             while True:
@@ -87,10 +86,10 @@ class SiteWatcherService(win32serviceutil.ServiceFramework):
                     break
                 if self.process and self.process.poll() is not None:
                     code = self.process.returncode
-                    servicemanager.LogErrorMsg(f"SiteWatcher agent exited unexpectedly with code {code}")
-                    raise RuntimeError(f"SiteWatcher agent exited with code {code}")
+                    servicemanager.LogErrorMsg(f"NodeVyu agent exited unexpectedly with code {code}")
+                    raise RuntimeError(f"NodeVyu agent exited with code {code}")
         except Exception as exc:
-            servicemanager.LogErrorMsg(f"SiteWatcher Agent service error: {exc}")
+            servicemanager.LogErrorMsg(f"NodeVyu Agent service error: {exc}")
             raise
         finally:
             if self.process and self.process.poll() is None:
@@ -108,8 +107,8 @@ class SiteWatcherService(win32serviceutil.ServiceFramework):
                     handle.close()
                 except Exception:
                     pass
-            servicemanager.LogInfoMsg("SiteWatcher Agent service stopped")
+            servicemanager.LogInfoMsg("NodeVyu Agent service stopped")
 
 
 if __name__ == "__main__":
-    win32serviceutil.HandleCommandLine(SiteWatcherService)
+    win32serviceutil.HandleCommandLine(NodeVyuService)
