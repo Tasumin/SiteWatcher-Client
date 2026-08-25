@@ -35,7 +35,9 @@ def nvr_stream_loop():
     last_snapshot = {}
     while True:
         try:
-            cfg = api("GET", "/api/agent/config").json()
+            response = api("GET", "/api/agent/config")
+            response.raise_for_status()
+            cfg = response.json()
             now = time.time()
             for device in cfg.get("devices", []):
                 streams = device.get("nvrStreams") or []
@@ -100,4 +102,4 @@ def nvr_stream_loop():
                         print(f"[nvr] {stream.get('name')}: cycle took {elapsed:.1f}s", flush=True)
         except Exception as exc:
             print(f"[nvr] worker error: {exc}", flush=True)
-        time.sleep(2)
+        time.sleep(10)
