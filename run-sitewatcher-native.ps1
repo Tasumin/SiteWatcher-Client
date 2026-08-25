@@ -1,13 +1,15 @@
 param(
-    [string]$InstallPath = "C:\SiteWatcher-Agent",
+    [string]$InstallPath = "C:\NodeVyu-Agent",
     [ValidateSet('Start','Stop','Restart','Status','Upgrade')]
     [string]$Action = 'Status'
 )
 
 $ErrorActionPreference = "Stop"
 $RepoInstaller = "https://raw.githubusercontent.com/Tasumin/SiteWatcher-Client/main/install-sitewatcher-native.ps1"
-$ServiceName = "SiteWatcherAgent"
-$DefaultServerUrl = "https://monitoring.talondns.com"
+$ServiceName = "NodeVyuAgent"
+$LegacyServiceName = "SiteWatcherAgent"
+$LegacyInstallPath = "C:\SiteWatcher-Agent"
+$DefaultServerUrl = "https://nodevyu.com"
 
 function Require-Admin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -21,7 +23,10 @@ function Require-Admin {
 
 function Get-ConfiguredServerUrl {
     $envFile = Join-Path $InstallPath '.env'
-    if (-not (Test-Path $envFile)) { return $null }
+    if (-not (Test-Path $envFile)) {
+        $legacyEnv = Join-Path $LegacyInstallPath '.env'
+        if (Test-Path $legacyEnv) { $envFile = $legacyEnv } else { return $null }
+    }
     foreach ($line in Get-Content $envFile) {
         if ($line -match '^\s*SITEWATCH_SERVER_URL\s*=\s*(.+?)\s*$') {
             return $Matches[1].Trim().TrimEnd('/')
@@ -30,53 +35,30 @@ function Get-ConfiguredServerUrl {
     return $null
 }
 
-function Get-InstallerServerUrl {
-    param([bool]$IsNewInstall)
-
-    if ($IsNewInstall) { return $DefaultServerUrl }
-
-    $configured = Get-ConfiguredServerUrl
-    if (-not $configured) { return $DefaultServerUrl }
-
-    # Automatically move legacy Vercel-hosted SiteWatcher installs to the
-    # production VM. Custom/non-Vercel server URLs are preserved.
-    try {
-        $uri = [Uri]$configured
-        if ($uri.Host -like '*.vercel.app') {
-            Write-Host "Migrating SiteWatcher server URL:" -ForegroundColor Yellow
-            Write-Host "  $configured"
-            Write-Host "  -> $DefaultServerUrl" -ForegroundColor Green
-            return $DefaultServerUrl
-        }
-    } catch { }
-
-    return $null
-}
-
 function Invoke-LatestInstaller {
-    param([bool]$IsNewInstall = $false)
-
-    $installer = Join-Path $env:TEMP ("install-sitewatcher-native-" + [guid]::NewGuid().ToString('N') + ".ps1")
+    $installer = Join-Path $env:TEMP ("install-nodevyu-agent-" + [guid]::NewGuid().ToString('N') + ".ps1")
     Invoke-WebRequest -Uri ($RepoInstaller + "?v=" + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) -OutFile $installer -UseBasicParsing
     try {
-        $serverUrl = Get-InstallerServerUrl -IsNewInstall $IsNewInstall
-        $installerArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$installer,'-InstallPath',$InstallPath)
-        if ($serverUrl) { $installerArgs += @('-ServerUrl',$serverUrl) }
-
-        & powershell.exe @installerArgs
-        if ($LASTEXITCODE -ne 0) { throw "SiteWatcher installer failed with exit code $LASTEXITCODE." }
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -InstallPath $InstallPath
+        if ($LASTEXITCODE -ne 0) { throw "NodeVyu installer failed with exit code $LASTEXITCODE." }
     } finally {
         Remove-Item $installer -Force -ErrorAction SilentlyContinue
     }
 }
 
 Require-Admin
-New-Item -ItemType Directory -Force -Path $InstallPath | Out-Null
 $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+$legacyService = Get-Service -Name $LegacyServiceName -ErrorAction SilentlyContinue
+
+if (-not $service -and $legacyService) {
+    Write-Host "Legacy SiteWatcher Agent detected. Migrating it to NodeVyu Agent..." -ForegroundColor Yellow
+    Invoke-LatestInstaller
+    $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+}
 
 if (-not $service) {
-    Write-Host "SiteWatcher Windows service is not installed. Installing it now..." -ForegroundColor Yellow
-    Invoke-LatestInstaller -IsNewInstall $true
+    Write-Host "NodeVyu Windows service is not installed. Installing it now..." -ForegroundColor Yellow
+    Invoke-LatestInstaller
     exit 0
 }
 
@@ -92,14 +74,14 @@ switch ($Action) {
         Start-Service -Name $ServiceName
     }
     'Upgrade' {
-        Invoke-LatestInstaller -IsNewInstall $false
+        Invoke-LatestInstaller
         exit 0
     }
     'Status' { }
 }
 
 $service = Get-Service -Name $ServiceName
-Write-Host "SiteWatcher Agent" -ForegroundColor Cyan
+Write-Host "NodeVyu Agent" -ForegroundColor Cyan
 Write-Host "Service name : $ServiceName"
 Write-Host "Status       : $($service.Status)" -ForegroundColor $(if ($service.Status -eq 'Running') {'Green'} else {'Yellow'})
 Write-Host "Install path : $InstallPath"
