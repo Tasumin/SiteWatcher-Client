@@ -1,4 +1,5 @@
 import os
+import sys
 import threading
 from pathlib import Path
 
@@ -29,6 +30,14 @@ def main() -> None:
     root = Path(__file__).resolve().parent.parent
     os.chdir(root)
     load_env(root)
+
+    # Keep one simple append-only log while NodeVyu is under active development.
+    # WinSW may maintain its own small wrapper log, but all agent stdout/stderr goes here.
+    log_dir = root / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_handle = open(log_dir / "agent.log", "a", encoding="utf-8", buffering=1)
+    sys.stdout = log_handle
+    sys.stderr = log_handle
 
     from .main import main as agent_main
     from . import remote_console
