@@ -35,9 +35,9 @@ def _started_marker(update_id: str) -> str:
 
 
 def _write_updater_script(update_id: str, installer_url: str, update_log: str) -> str:
-    update_root = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "SiteWatcher", "updates")
+    update_root = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "NodeVyu", "updates")
     os.makedirs(update_root, exist_ok=True)
-    updater_path = os.path.join(update_root, f"SiteWatcher-Agent-Update-{update_id}.ps1")
+    updater_path = os.path.join(update_root, f"NodeVyu-Agent-Update-{update_id}.ps1")
 
     updater_script = f"""$ErrorActionPreference = 'Stop'
 $Log = '{_ps_quote(update_log)}'
@@ -51,25 +51,24 @@ function Write-UpdateLog([string]$Message) {{
 }}
 Write-UpdateLog '{_ps_quote(_started_marker(update_id))}'
 Start-Sleep -Seconds 2
-$installer = Join-Path $env:TEMP 'install-sitewatcher-agent.ps1'
+$installer = Join-Path $env:TEMP 'install-nodevyu-agent.ps1'
 try {{
-  Write-UpdateLog 'downloading installer'
+  Write-UpdateLog 'downloading NodeVyu installer'
   Invoke-WebRequest -Uri '{_ps_quote(installer_url)}' -OutFile $installer -UseBasicParsing
   Write-UpdateLog "installer downloaded: $installer"
   $installerBuild = (Select-String -Path $installer -Pattern '\\$InstallerBuild\\s*=\\s*[\"'']([^\"'']+)' -ErrorAction SilentlyContinue).Matches.Groups[1].Value
   if ($installerBuild) {{ Write-UpdateLog ('installer build: ' + $installerBuild) }}
-  Write-UpdateLog 'starting installer child process'
-  $stdout = Join-Path $env:TEMP ('sitewatcher-update-' + [guid]::NewGuid().ToString('N') + '.out')
-  $stderr = Join-Path $env:TEMP ('sitewatcher-update-' + [guid]::NewGuid().ToString('N') + '.err')
+  $stdout = Join-Path $env:TEMP ('nodevyu-update-' + [guid]::NewGuid().ToString('N') + '.out')
+  $stderr = Join-Path $env:TEMP ('nodevyu-update-' + [guid]::NewGuid().ToString('N') + '.err')
   $arguments = @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',$installer,'-ServerUrl','{_ps_quote(SERVER)}')
   $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
   if (Test-Path $stdout) {{ Get-Content $stdout | ForEach-Object {{ Write-UpdateLog ('installer: ' + $_) }}; Remove-Item $stdout -Force -ErrorAction SilentlyContinue }}
   if (Test-Path $stderr) {{ Get-Content $stderr | ForEach-Object {{ Write-UpdateLog ('installer-error: ' + $_) }}; Remove-Item $stderr -Force -ErrorAction SilentlyContinue }}
   Write-UpdateLog "installer exited with code $($p.ExitCode)"
-  $versionFile = 'C:\\SiteWatcher-Agent\\sitewatch_agent\\__init__.py'
+  $versionFile = 'C:\\NodeVyu-Agent\\sitewatch_agent\\__init__.py'
   if (Test-Path $versionFile) {{ Write-UpdateLog ('installed version file: ' + ((Get-Content $versionFile -Raw).Trim())) }}
-  $svc = Get-Service -Name 'SiteWatcherAgent' -ErrorAction SilentlyContinue
-  if ($svc) {{ Write-UpdateLog ('service status after installer: ' + $svc.Status) }} else {{ Write-UpdateLog 'service missing after installer' }}
+  $svc = Get-Service -Name 'NodeVyuAgent' -ErrorAction SilentlyContinue
+  if ($svc) {{ Write-UpdateLog ('service status after installer: ' + $svc.Status) }} else {{ Write-UpdateLog 'NodeVyu service missing after installer' }}
   if ($p.ExitCode -ne 0) {{ throw "Installer exited with code $($p.ExitCode)" }}
 }} catch {{
   Write-UpdateLog ('ERROR: ' + ($_ | Out-String).Trim())
@@ -93,19 +92,17 @@ def _read_update_log() -> str:
 
 def launch_self_update() -> None:
     """Launch the updater outside the WinSW service process tree via WMI/CIM."""
+    # Keep the legacy download route during the rebrand so older servers and
+    # existing agents can transition without a coordinated cutover.
     installer_url = SERVER + "/downloads/sitewatcher-agent"
     update_id = uuid.uuid4().hex[:10]
     update_log = _update_log_path()
     marker = _started_marker(update_id)
-    _append(f"remote update requested; id={update_id}; installer={installer_url}")
+    _append(f"remote NodeVyu update requested; id={update_id}; installer={installer_url}")
 
     updater_path = _write_updater_script(update_id, installer_url, update_log)
     _append(f"updater script written: {updater_path}")
 
-    # Win32_Process.Create is executed by the Windows WMI provider. Because the
-    # SiteWatcher service runs as SYSTEM, the created process also runs as SYSTEM,
-    # but it is not a child of the WinSW-managed SiteWatcher service process tree.
-    # This lets the updater survive when the installer stops/replaces SiteWatcher.
     launch = f"""
 $ErrorActionPreference = 'Stop'
 $scriptPath = '{_ps_quote(updater_path)}'
@@ -126,16 +123,14 @@ Write-Output ('created pid=' + $result.ProcessId)
         )
     except subprocess.TimeoutExpired as exc:
         _append("ERROR WMI launcher timed out")
-        raise RuntimeError("Timed out while creating detached SiteWatcher updater process") from exc
+        raise RuntimeError("Timed out while creating detached NodeVyu updater process") from exc
 
     detail = ((created.stdout or "") + " " + (created.stderr or "")).strip()
     if created.returncode != 0:
         _append(f"ERROR creating detached updater process: {detail or 'unknown error'}")
-        raise RuntimeError(detail or "Unable to create detached SiteWatcher updater process")
+        raise RuntimeError(detail or "Unable to create detached NodeVyu updater process")
     _append(f"detached updater requested: {detail or update_id}")
 
-    # The updater writes this marker before it sleeps or touches the SiteWatcher
-    # service. Seeing it proves the detached process actually executed.
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         if marker in _read_update_log():
