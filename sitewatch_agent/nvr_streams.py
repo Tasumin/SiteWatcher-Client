@@ -48,10 +48,16 @@ def nvr_stream_loop():
                 for stream in streams:
                     sid = stream.get("id")
                     url = stream.get("url")
-                    if not sid or not url or now < next_due.get(sid, 0):
+                    validation_requested_at = stream.get("validationRequestedAt")
+                    force_validation = bool(validation_requested_at)
+                    if not sid or not url:
+                        continue
+                    if not force_validation and now < next_due.get(sid, 0):
                         continue
                     next_due[sid] = now + interval
                     started = time.monotonic()
+                    if force_validation:
+                        print(f"[nvr] validating {stream.get('name')} channel={stream.get('channel')} request={validation_requested_at}", flush=True)
                     ok, latency, error = rtsp(url, stream.get("username"), stream.get("password"), timeout)
                     message = "RTSP stream available" if ok else (error or "RTSP stream unavailable")
                     payload = {
@@ -64,11 +70,14 @@ def nvr_stream_loop():
                         "latencyMs": latency,
                         "message": message,
                         "url": url,
+                        "validationRequestedAt": validation_requested_at,
                     }
                     try:
                         r = api("POST", "/api/agent/nvr-stream-results", json=payload)
                         if not r.ok:
                             print(f"[nvr] {stream.get('name')}: result HTTP {r.status_code}: {r.text[:250]}", flush=True)
+                        elif force_validation:
+                            print(f"[nvr] validation {stream.get('name')}: {'PASS' if ok else 'FAIL'} {message}", flush=True)
                     except Exception as exc:
                         print(f"[nvr] {stream.get('name')}: result upload failed: {exc}", flush=True)
                     print(f"[nvr] {stream.get('name')} channel={stream.get('channel')} {'UP' if ok else 'DOWN'} latency={latency}ms", flush=True)
