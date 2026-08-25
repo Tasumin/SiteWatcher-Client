@@ -31,8 +31,7 @@ def main() -> None:
     os.chdir(root)
     load_env(root)
 
-    # Keep one simple append-only log while NodeVyu is under active development.
-    # WinSW may maintain its own small wrapper log, but all agent stdout/stderr goes here.
+    # One append-only application log for now. No application-level rotation.
     log_dir = root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_handle = open(log_dir / "agent.log", "a", encoding="utf-8", buffering=1)
@@ -42,7 +41,6 @@ def main() -> None:
     from .main import main as agent_main
     from . import remote_console
     from .host_monitor import host_monitor_loop
-    from .nvr_streams import nvr_stream_loop
     from .update_launcher import launch_self_update
 
     remote_console._launch_self_update = launch_self_update
@@ -55,10 +53,7 @@ def main() -> None:
     host_thread.start()
     print("[startup] NodeVyu worker host-monitor started", flush=True)
 
-    nvr_thread = threading.Thread(target=nvr_stream_loop, name="nodevyu-nvr-streams", daemon=True)
-    nvr_thread.start()
-    print("[startup] NodeVyu worker nvr-streams started", flush=True)
-
+    # NVR stream worker is started by agent_main so there is exactly one copy.
     agent_main()
 
 
