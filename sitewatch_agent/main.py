@@ -5,6 +5,7 @@ from .checks import run_device, capture_snapshot
 from .storage import Storage
 from .discovery import scan_network
 from .onvif import probe_onvif
+from .snmp import run_snmp_walk
 from .remote_tunnel import remote_tunnel_loop
 from .nvr_streams import nvr_stream_loop
 
@@ -187,6 +188,37 @@ def onvif_loop():
         except Exception as e:print(f"[onvif] worker error: {e}",flush=True)
         time.sleep(2)
 
+def snmp_walk_loop():
+    time.sleep(4)
+    while True:
+        try:
+            r=api("GET","/api/agent/snmp-walk")
+            if not r.ok:
+                if r.status_code!=404:print(f"[snmp] server HTTP {r.status_code}: {r.text[:300]}",flush=True)
+                time.sleep(3);continue
+            walk=(r.json() if r.content else {}).get("walk")
+            if not walk:time.sleep(2);continue
+            wid=walk.get("id");host=walk.get("host");community=walk.get("community")
+            if not wid or not host or community is None:
+                print("[snmp] malformed walk request",flush=True);time.sleep(2);continue
+            root_oid=str(walk.get("root_oid") or "1.3.6.1.2.1")
+            print(f"[snmp] {host}: walking {root_oid}",flush=True)
+            outcome=run_snmp_walk(
+                host=str(host),
+                community=str(community),
+                root_oid=root_oid,
+                port=int(walk.get("port") or 161),
+                version=str(walk.get("snmp_version") or "2c"),
+                timeout_seconds=float(walk.get("timeout_seconds") or 3),
+                retries=int(walk.get("retries") or 1),
+                max_rows=int(walk.get("max_rows") or 500),
+            )
+            payload={"walkId":wid,"status":outcome.get("status"),"message":outcome.get("message"),"rows":outcome.get("rows") or [],"completedAt":datetime.now(timezone.utc).isoformat(),"version":__version__}
+            api("POST","/api/agent/snmp-walk",json=payload).raise_for_status()
+            print(f"[snmp] {host}: {outcome.get('status')} - {outcome.get('message')}",flush=True)
+        except Exception as e:print(f"[snmp] worker error: {e}",flush=True)
+        time.sleep(2)
+
 def scheduled_check(device):
     try:return run_device(device)
     except Exception as e:return {"deviceId":device["id"],"deviceName":device["name"],"observedAt":datetime.now(timezone.utc).isoformat(),"overallOk":False,"latencyMs":None,"message":f"Agent check error: {e}","checks":[]}
@@ -198,7 +230,7 @@ def main():
     while True:
         try:fetch_config();break
         except Exception as e:print(f"[startup] waiting for server: {e}",flush=True);time.sleep(10)
-    start_worker("heartbeat",heartbeat);start_worker("discovery",discovery_loop);start_worker("preview",preview_loop);start_worker("retry",monitor_retry_loop);start_worker("onvif",onvif_loop);start_worker("nvr-streams",nvr_stream_loop);start_worker("remote-tunnel",lambda:remote_tunnel_loop(SERVER,TOKEN))
+    start_worker("heartbeat",heartbeat);start_worker("discovery",discovery_loop);start_worker("preview",preview_loop);start_worker("retry",monitor_retry_loop);start_worker("onvif",onvif_loop);start_worker("snmp-walk",snmp_walk_loop);start_worker("nvr-streams",nvr_stream_loop);start_worker("remote-tunnel",lambda:remote_tunnel_loop(SERVER,TOKEN))
     monitor_pool=concurrent.futures.ThreadPoolExecutor(max_workers=MONITOR_WORKERS,thread_name_prefix="sitewatch-check");snapshot_pool=concurrent.futures.ThreadPoolExecutor(max_workers=SNAPSHOT_WORKERS,thread_name_prefix="sitewatch-snapshot");in_flight={};snapshot_in_flight={};last_config=time.time()
     while True:
         now=time.time()
