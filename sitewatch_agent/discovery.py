@@ -5,6 +5,8 @@ import re
 import socket
 import time
 
+from .snmp import probe_snmp
+
 DISCOVERY_PORTS = (80, 443, 554, 8000, 9000)
 MAX_ADDRESSES_PER_CIDR = 1024
 
@@ -19,13 +21,9 @@ def local_ipv4():
 
 
 def discovery_networks():
-    # Preferred setting supports comma, semicolon, whitespace, or newline separated CIDRs.
     configured = os.getenv("SITEWATCH_DISCOVERY_CIDRS", "").strip()
-
-    # Backward compatibility with the original single-CIDR setting.
     if not configured:
         configured = os.getenv("SITEWATCH_DISCOVERY_CIDR", "").strip()
-
     if configured:
         raw_values = [x.strip() for x in re.split(r"[,;\s]+", configured) if x.strip()]
     else:
@@ -47,8 +45,12 @@ def discovery_networks():
         if key not in seen:
             networks.append(network)
             seen.add(key)
-
     return networks
+
+
+def discovery_snmp_communities():
+    configured = os.getenv("SITEWATCH_SNMP_DISCOVERY_COMMUNITIES", "public")
+    return [x.strip() for x in re.split(r"[,;\s]+", configured) if x.strip()]
 
 
 def open_port(host, port, timeout=0.35):
@@ -65,13 +67,30 @@ def open_port(host, port, timeout=0.35):
 def scan_host(host):
     host = str(host)
     ports = [p for p in DISCOVERY_PORTS if open_port(host, p)]
+    snmp = probe_snmp(
+        host,
+        discovery_snmp_communities(),
+        port=161,
+        timeout_seconds=float(os.getenv("SITEWATCH_SNMP_DISCOVERY_TIMEOUT_SECONDS", "0.5")),
+        retries=0,
+    )
+    if snmp.get("detected"):
+        ports.append(161)
     if not ports:
         return None
     try:
         hostname = socket.gethostbyaddr(host)[0]
     except Exception:
         hostname = None
-    return {"host": host, "hostname": hostname, "openPorts": ports}
+    result = {"host": host, "hostname": hostname, "openPorts": sorted(set(ports))}
+    if snmp.get("detected"):
+        result["snmp"] = {
+            "detected": True,
+            "port": 161,
+            "version": snmp.get("version"),
+            "sysDescr": snmp.get("sysDescr"),
+        }
+    return result
 
 
 def scan_network():
@@ -84,17 +103,15 @@ def scan_network():
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(64, max(1, len(hosts)))) as pool:
             for result in pool.map(scan_host, hosts):
                 if result:
-                    # De-duplicate overlapping CIDRs by host IP. Merge any discovered ports.
                     existing = all_results.get(result["host"])
                     if existing:
                         existing["openPorts"] = sorted(set(existing["openPorts"]) | set(result["openPorts"]))
                         if not existing.get("hostname") and result.get("hostname"):
                             existing["hostname"] = result["hostname"]
+                        if result.get("snmp"):
+                            existing["snmp"] = result["snmp"]
                     else:
                         all_results[result["host"]] = result
 
-    results = sorted(
-        all_results.values(),
-        key=lambda x: ipaddress.ip_address(x["host"])
-    )
+    results = sorted(all_results.values(), key=lambda x: ipaddress.ip_address(x["host"]))
     return networks, results, time.monotonic() - started
