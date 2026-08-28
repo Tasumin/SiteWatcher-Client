@@ -1,6 +1,7 @@
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 
@@ -56,13 +57,21 @@ def main() -> None:
 
     server_url = os.environ["SITEWATCH_SERVER_URL"].rstrip("/")
     agent_token = os.environ["SITEWATCH_AGENT_TOKEN"]
+
+    def delayed_live_stream() -> None:
+        # agent_main acquires the single-instance lock immediately below.  A
+        # duplicate/recovery-launched process exits before this delay elapses,
+        # preventing it from briefly stealing the relay control socket.
+        time.sleep(3)
+        live_stream_loop(server_url, agent_token)
+
     live_thread = threading.Thread(
-        target=lambda: live_stream_loop(server_url, agent_token),
+        target=delayed_live_stream,
         name="nodevyu-live-stream",
         daemon=True,
     )
     live_thread.start()
-    print("[startup] NodeVyu worker live-stream started", flush=True)
+    print("[startup] NodeVyu worker live-stream scheduled", flush=True)
 
     # NVR stream worker is started by agent_main so there is exactly one copy.
     agent_main()
