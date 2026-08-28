@@ -10,7 +10,7 @@ ROUTES = {
     "update.log": ("[update]",),
     "snmp.log": ("[snmp]",),
     "host-monitor.log": ("[host]",),
-    "camera-monitor.log": ("[camera]", "[snapshot]", "[preview]", "[onvif]", "[nvr]", "[rtsp]"),
+    "camera-monitor.log": ("[camera]", "[check]", "[snapshot]", "[preview]", "[onvif]", "[nvr]", "[rtsp]"),
 }
 
 
