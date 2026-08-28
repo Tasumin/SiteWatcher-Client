@@ -19,6 +19,7 @@ MAX_TRANSCODE_BITRATE_KBPS = max(256, int(os.getenv("SITEWATCH_LIVE_MAX_BITRATE_
 MAX_TRANSCODE_WIDTH = max(320, int(os.getenv("SITEWATCH_LIVE_MAX_WIDTH", "1280")))
 TRANSCODE_THREADS = max(1, min(16, int(os.getenv("SITEWATCH_LIVE_TRANSCODE_THREADS", "2"))))
 STARTUP_TIMEOUT = max(5, int(os.getenv("SITEWATCH_LIVE_STARTUP_TIMEOUT_SECONDS", "15")))
+AUDIO_BITRATE_KBPS = max(32, min(256, int(os.getenv("SITEWATCH_LIVE_AUDIO_BITRATE_KBPS", "96"))))
 
 _workers = {}
 _workers_lock = threading.RLock()
@@ -40,8 +41,8 @@ def _redact(text: str) -> str:
 def _probe(target: str, timeout: int):
     cmd = [
         _tool("ffprobe"), "-v", "error", "-rtsp_transport", "tcp",
-        "-timeout", str(timeout * 1_000_000), "-select_streams", "v:0",
-        "-show_entries", "stream=codec_name,width,height,bit_rate,avg_frame_rate",
+        "-timeout", str(timeout * 1_000_000),
+        "-show_entries", "stream=codec_type,codec_name,width,height,bit_rate,avg_frame_rate",
         "-of", "json", target,
     ]
     try:
@@ -60,12 +61,13 @@ def _probe(target: str, timeout: int):
         raise RuntimeError(err or "Unable to open RTSP stream")
     try:
         streams = json.loads(proc.stdout or "{}").get("streams") or []
-        stream = streams[0] if streams else None
+        video = next((stream for stream in streams if str(stream.get("codec_type") or "").lower() == "video"), None)
+        audio = next((stream for stream in streams if str(stream.get("codec_type") or "").lower() == "audio"), None)
     except Exception as exc:
         raise RuntimeError("Unable to read RTSP codec information") from exc
-    if not stream or not stream.get("codec_name"):
+    if not video or not video.get("codec_name"):
         raise RuntimeError("No video stream found")
-    return stream
+    return {"video": video, "audio": audio}
 
 
 def _reserve_mode(session_id: str, codec: str) -> str:
@@ -86,12 +88,19 @@ def _reserve_mode(session_id: str, codec: str) -> str:
         return "transcode"
 
 
-def _ffmpeg_command(target: str, mode: str, timeout: int):
+def _ffmpeg_command(target: str, mode: str, timeout: int, has_audio: bool):
     common = [
         _tool("ffmpeg"), "-hide_banner", "-loglevel", "warning",
         "-rtsp_transport", "tcp", "-timeout", str(timeout * 1_000_000),
-        "-fflags", "+genpts+discardcorrupt", "-i", target, "-map", "0:v:0", "-an",
+        "-fflags", "+genpts+discardcorrupt", "-i", target, "-map", "0:v:0",
     ]
+    if has_audio:
+        common += [
+            "-map", "0:a:0?",
+            "-c:a", "aac", "-b:a", f"{AUDIO_BITRATE_KBPS}k", "-ar", "48000",
+        ]
+    else:
+        common += ["-an"]
     if mode == "copy":
         return common + [
             "-c:v", "copy", "-tag:v", "avc1",
@@ -165,10 +174,13 @@ def _stream_worker(server_url: str, token: str, job: dict, node_id: str, control
 
         enter_viewing_window(source_type, source_id, session_id)
         target = _rtsp_with_credentials(url, username, password)
-        info = _probe(target, timeout)
+        probe = _probe(target, timeout)
+        info = probe["video"]
+        audio_info = probe.get("audio")
+        has_audio = bool(audio_info and audio_info.get("codec_name"))
         codec = str(info.get("codec_name") or "").lower()
         mode = _reserve_mode(session_id, codec)
-        command = _ffmpeg_command(target, mode, timeout)
+        command = _ffmpeg_command(target, mode, timeout, has_audio)
 
         uplink_url = (
             f"{_ws_base(server_url)}/stream/uplink"
@@ -193,18 +205,23 @@ def _stream_worker(server_url: str, token: str, job: dict, node_id: str, control
             if session_id in _workers:
                 _workers[session_id]["proc"] = proc
         threading.Thread(target=_stderr_reader, args=(proc, stderr_tail, stop_event), daemon=True).start()
+        mime_type = 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"' if has_audio else "video/mp4; codecs=avc1.42E01E"
         _send_json(uplink, {
             "type": "stream-ready",
             "sessionId": session_id,
-            "mimeType": "video/mp4; codecs=avc1.42E01E",
+            "mimeType": mime_type,
             "mode": mode,
             "sourceCodec": codec,
             "outputCodec": "h264",
+            "audioCodec": "aac" if has_audio else None,
+            "sourceAudioCodec": str(audio_info.get("codec_name") or "").lower() if has_audio else None,
+            "hasAudio": has_audio,
             "width": info.get("width"),
             "height": info.get("height"),
             "bitrateKbps": int(info.get("bit_rate") or 0) // 1000 if str(info.get("bit_rate") or "").isdigit() else None,
         })
-        print(f"[live] session={session_id[:8]} source={source_type}:{source_id} codec={codec} mode={mode}", flush=True)
+        audio_log = f" audio={str(audio_info.get('codec_name') or '').lower()}->aac" if has_audio else " audio=none"
+        print(f"[live] session={session_id[:8]} source={source_type}:{source_id} codec={codec} mode={mode}{audio_log}", flush=True)
 
         init_buffer = bytearray()
         init_sent = False
