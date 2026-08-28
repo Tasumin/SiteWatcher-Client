@@ -1,16 +1,20 @@
 import base64
 import os
+import threading
 import time
 from datetime import datetime, timezone
 
 import requests
 
 from .checks import rtsp, capture_snapshot
+from .live_stream import live_stream_loop
 
 SERVER = os.environ["SITEWATCH_SERVER_URL"].rstrip("/")
 TOKEN = os.environ["SITEWATCH_AGENT_TOKEN"]
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 SNAPSHOT_INTERVAL = max(30, int(os.getenv("SITEWATCH_SNAPSHOT_INTERVAL_SECONDS", "300")))
+_live_worker_started = False
+_live_worker_lock = threading.Lock()
 
 
 def api(method: str, path: str, **kwargs):
@@ -49,7 +53,23 @@ def _capture(device, stream, url, username, password, timeout):
     return capture_snapshot(fake_device)
 
 
+def _ensure_live_worker():
+    global _live_worker_started
+    with _live_worker_lock:
+        if _live_worker_started:
+            return
+        _live_worker_started = True
+    threading.Thread(
+        target=live_stream_loop,
+        args=(SERVER, TOKEN),
+        name="sitewatch-live-control",
+        daemon=True,
+    ).start()
+    print("[live] streaming worker started", flush=True)
+
+
 def nvr_stream_loop():
+    _ensure_live_worker()
     print(f"[nvr] camera stream worker started server={SERVER}", flush=True)
     next_due = {}
     last_snapshot = {}
