@@ -6,6 +6,11 @@ from pathlib import Path
 
 _SERVICE_ENTRY_MUTEX = None
 _SERVICE_ENTRY_LOCK = None
+_CANONICAL_SERVER_URL = "https://nodevyu.com"
+_LEGACY_SERVER_URLS = {
+    "https://monitoring.talondns.com",
+    "http://monitoring.talondns.com",
+}
 
 
 def acquire_service_entry_mutex() -> bool:
@@ -63,12 +68,32 @@ def acquire_service_entry_file_lock(root: Path) -> bool:
     return True
 
 
+def _migrate_legacy_server_url(env_file: Path, rows: list[str]) -> list[str]:
+    changed = False
+    migrated: list[str] = []
+    for raw in rows:
+        line = raw.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, value = line.split("=", 1)
+            if key.strip() == "SITEWATCH_SERVER_URL" and value.strip().rstrip("/").lower() in _LEGACY_SERVER_URLS:
+                migrated.append(f"SITEWATCH_SERVER_URL={_CANONICAL_SERVER_URL}")
+                changed = True
+                continue
+        migrated.append(raw)
+    if changed:
+        env_file.write_text("\n".join(migrated).rstrip() + "\n", encoding="utf-8")
+    return migrated
+
+
 def load_env(root: Path) -> None:
     env_file = root / ".env"
     if not env_file.exists():
         raise RuntimeError(f"Missing NodeVyu configuration: {env_file}")
 
-    for raw in env_file.read_text(encoding="utf-8-sig").splitlines():
+    rows = env_file.read_text(encoding="utf-8-sig").splitlines()
+    rows = _migrate_legacy_server_url(env_file, rows)
+
+    for raw in rows:
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -90,7 +115,7 @@ def main() -> None:
     os.chdir(root)
 
     # These guards must run before environment loading, logging, imports, or
-    # worker startup.  If any service/update path recursively launches another
+    # worker startup. If any service/update path recursively launches another
     # service_entry process, the child exits without touching the relay.
     if not acquire_service_entry_mutex():
         return
@@ -99,18 +124,19 @@ def main() -> None:
 
     load_env(root)
 
-    # One append-only application log for now. No application-level rotation.
     log_dir = root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_handle = open(log_dir / "agent.log", "a", encoding="utf-8", buffering=1)
-    sys.stdout = log_handle
-    sys.stderr = log_handle
+    from .log_router import install_log_router
+    install_log_router(log_dir)
 
     from .main import main as agent_main
     from . import remote_console
     from .host_monitor import host_monitor_loop
     from .live_stream import live_stream_loop
     from .update_launcher import launch_self_update
+
+    print(f"[startup] logging split enabled path={log_dir}", flush=True)
+    print(f"[startup] server={os.environ.get('SITEWATCH_SERVER_URL')}", flush=True)
 
     remote_console._launch_self_update = launch_self_update
 
