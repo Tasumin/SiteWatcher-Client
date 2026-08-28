@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 _SERVICE_ENTRY_MUTEX = None
+_SERVICE_ENTRY_LOCK = None
 
 
 def acquire_service_entry_mutex() -> bool:
@@ -12,17 +13,53 @@ def acquire_service_entry_mutex() -> bool:
     global _SERVICE_ENTRY_MUTEX
     if os.name != "nt":
         return True
-    import ctypes
 
-    kernel32 = ctypes.windll.kernel32
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    ctypes.set_last_error(0)
     mutex = kernel32.CreateMutexW(None, False, "Global\\NodeVyuAgent-ServiceEntry")
     if not mutex:
-        raise OSError("Unable to create NodeVyu service-entry mutex")
-    ERROR_ALREADY_EXISTS = 183
-    if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+    error = ctypes.get_last_error()
+    if error == 183:  # ERROR_ALREADY_EXISTS
         kernel32.CloseHandle(mutex)
         return False
+
     _SERVICE_ENTRY_MUTEX = mutex
+    return True
+
+
+def acquire_service_entry_file_lock(root: Path) -> bool:
+    """Second singleton guard using a byte-range lock held for process lifetime."""
+    global _SERVICE_ENTRY_LOCK
+    if os.name != "nt":
+        return True
+
+    import msvcrt
+
+    data_dir = root / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = data_dir / "service-entry.lock"
+    handle = open(lock_path, "a+b")
+    handle.seek(0, os.SEEK_END)
+    if handle.tell() == 0:
+        handle.write(b"\0")
+        handle.flush()
+    handle.seek(0)
+    try:
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        handle.close()
+        return False
+    _SERVICE_ENTRY_LOCK = handle
     return True
 
 
@@ -49,11 +86,17 @@ def load_env(root: Path) -> None:
 
 
 def main() -> None:
-    if not acquire_service_entry_mutex():
-        return
-
     root = Path(__file__).resolve().parent.parent
     os.chdir(root)
+
+    # These guards must run before environment loading, logging, imports, or
+    # worker startup.  If any service/update path recursively launches another
+    # service_entry process, the child exits without touching the relay.
+    if not acquire_service_entry_mutex():
+        return
+    if not acquire_service_entry_file_lock(root):
+        return
+
     load_env(root)
 
     # One append-only application log for now. No application-level rotation.
