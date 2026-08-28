@@ -4,6 +4,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
 from .snmp import run_snmp_get
+from .viewing_window import is_viewing
 
 IS_WINDOWS = os.name == "nt"
 CREATE_FLAGS = subprocess.CREATE_NO_WINDOW if IS_WINDOWS and hasattr(subprocess, "CREATE_NO_WINDOW") else 0
@@ -136,8 +137,19 @@ def _valid_jpeg(data: bytes):
     except Exception as e: return False, f"JPEG decode failed: {e}"
 
 
+def _snapshot_paused_for_viewing(device: dict) -> bool:
+    device_id = str(device.get("id") or "")
+    if not device_id:
+        return False
+    if device_id.startswith("nvr-"):
+        return is_viewing("nvr_stream", device_id[4:])
+    return is_viewing("device", device_id)
+
+
 def capture_snapshot(device: dict):
     if device.get("type") != "camera": return None
+    if _snapshot_paused_for_viewing(device):
+        return None
     rtsp_check = next((c for c in device.get("checks", []) if c.get("type") == "rtsp"), None)
     if not rtsp_check: return None
     host = device["host"]; timeout = int(device.get("timeoutSeconds", 8)); url = rtsp_check.get("url") or f"rtsp://{host}:554/"; target = _rtsp_with_credentials(url, rtsp_check.get("username"), rtsp_check.get("password")); errors = []
