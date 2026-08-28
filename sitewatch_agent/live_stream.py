@@ -1,3 +1,4 @@
+import atexit
 import json
 import os
 import re
@@ -6,6 +7,7 @@ import threading
 import time
 from urllib.parse import quote
 
+import requests
 import websocket
 
 from .checks import CREATE_FLAGS, _rtsp_with_credentials, _tool
@@ -15,6 +17,7 @@ MAX_STREAMS = max(1, int(os.getenv("SITEWATCH_MAX_LIVE_STREAMS", "2")))
 MAX_TRANSCODES = max(0, int(os.getenv("SITEWATCH_MAX_LIVE_TRANSCODES", "1")))
 MAX_TRANSCODE_BITRATE_KBPS = max(256, int(os.getenv("SITEWATCH_LIVE_MAX_BITRATE_KBPS", "2500")))
 MAX_TRANSCODE_WIDTH = max(320, int(os.getenv("SITEWATCH_LIVE_MAX_WIDTH", "1280")))
+TRANSCODE_THREADS = max(1, min(16, int(os.getenv("SITEWATCH_LIVE_TRANSCODE_THREADS", "2"))))
 STARTUP_TIMEOUT = max(5, int(os.getenv("SITEWATCH_LIVE_STARTUP_TIMEOUT_SECONDS", "15")))
 
 _workers = {}
@@ -65,37 +68,65 @@ def _probe(target: str, timeout: int):
     return stream
 
 
-def _active_transcodes() -> int:
+def _reserve_mode(session_id: str, codec: str) -> str:
     with _workers_lock:
-        return sum(1 for worker in _workers.values() if worker.get("mode") == "transcode" and not worker["stop"].is_set())
+        record = _workers.get(session_id)
+        if not record:
+            raise RuntimeError("Live stream job was cancelled")
+        if codec.lower() in {"h264", "avc1"}:
+            record["mode"] = "copy"
+            return "copy"
+        active = sum(
+            1 for sid, worker in _workers.items()
+            if sid != session_id and worker.get("mode") == "transcode" and not worker["stop"].is_set()
+        )
+        if MAX_TRANSCODES < 1 or active >= MAX_TRANSCODES:
+            raise RuntimeError("H.265 transcoding capacity exhausted")
+        record["mode"] = "transcode"
+        return "transcode"
 
 
-def _ffmpeg_command(target: str, codec: str, timeout: int):
+def _ffmpeg_command(target: str, mode: str, timeout: int):
     common = [
         _tool("ffmpeg"), "-hide_banner", "-loglevel", "warning",
         "-rtsp_transport", "tcp", "-timeout", str(timeout * 1_000_000),
         "-fflags", "+genpts+discardcorrupt", "-i", target, "-map", "0:v:0", "-an",
     ]
-    if codec.lower() in {"h264", "avc1"}:
+    if mode == "copy":
         return common + [
             "-c:v", "copy", "-tag:v", "avc1",
             "-movflags", "+frag_keyframe+empty_moov+default_base_moof+omit_tfhd_offset",
             "-f", "mp4", "pipe:1",
-        ], "copy"
-    if MAX_TRANSCODES < 1 or _active_transcodes() >= MAX_TRANSCODES:
-        raise RuntimeError("H.265 transcoding capacity exhausted")
+        ]
     return common + [
         "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-        "-pix_fmt", "yuv420p", "-vf", f"scale='min({MAX_TRANSCODE_WIDTH},iw)':-2:force_original_aspect_ratio=decrease",
+        "-threads", str(TRANSCODE_THREADS), "-pix_fmt", "yuv420p",
+        "-vf", f"scale='min({MAX_TRANSCODE_WIDTH},iw)':-2:force_original_aspect_ratio=decrease",
         "-maxrate", f"{MAX_TRANSCODE_BITRATE_KBPS}k", "-bufsize", f"{MAX_TRANSCODE_BITRATE_KBPS * 2}k",
         "-g", "30", "-keyint_min", "30", "-sc_threshold", "0",
         "-movflags", "+frag_keyframe+empty_moov+default_base_moof+omit_tfhd_offset",
         "-f", "mp4", "pipe:1",
-    ], "transcode"
+    ]
 
 
 def _send_json(ws, payload):
     ws.send(json.dumps(payload, separators=(",", ":")))
+
+
+def _report_stream_node(server_url: str, token: str, node_id: str):
+    if not node_id:
+        return
+    try:
+        response = requests.post(
+            server_url.rstrip("/") + "/api/agent/stream-node",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"nodeId": node_id},
+            timeout=10,
+        )
+        if not response.ok:
+            print(f"[live] unable to register relay node: HTTP {response.status_code}", flush=True)
+    except Exception as exc:
+        print(f"[live] unable to register relay node: {exc}", flush=True)
 
 
 def _stderr_reader(proc, tail, stop_event):
@@ -111,7 +142,7 @@ def _stderr_reader(proc, tail, stop_event):
         pass
 
 
-def _stream_worker(server_url: str, token: str, job: dict, node_id: str):
+def _stream_worker(server_url: str, token: str, job: dict, node_id: str, control_ws):
     session_id = str(job.get("sessionId") or "")
     source_type = str(job.get("sourceType") or "")
     source_id = str(job.get("sourceId") or "")
@@ -136,10 +167,8 @@ def _stream_worker(server_url: str, token: str, job: dict, node_id: str):
         target = _rtsp_with_credentials(url, username, password)
         info = _probe(target, timeout)
         codec = str(info.get("codec_name") or "").lower()
-        command, mode = _ffmpeg_command(target, codec, timeout)
-        with _workers_lock:
-            if session_id in _workers:
-                _workers[session_id]["mode"] = mode
+        mode = _reserve_mode(session_id, codec)
+        command = _ffmpeg_command(target, mode, timeout)
 
         uplink_url = (
             f"{_ws_base(server_url)}/stream/uplink"
@@ -160,6 +189,9 @@ def _stream_worker(server_url: str, token: str, job: dict, node_id: str):
             bufsize=0,
             creationflags=CREATE_FLAGS,
         )
+        with _workers_lock:
+            if session_id in _workers:
+                _workers[session_id]["proc"] = proc
         threading.Thread(target=_stderr_reader, args=(proc, stderr_tail, stop_event), daemon=True).start()
         _send_json(uplink, {
             "type": "stream-ready",
@@ -222,11 +254,11 @@ def _stream_worker(server_url: str, token: str, job: dict, node_id: str):
     except Exception as exc:
         message = _redact(str(exc)) or "Live stream failed"
         print(f"[live] session={session_id[:8]} failed: {message}", flush=True)
-        if uplink is not None:
-            try:
-                _send_json(uplink, {"type": "stream-error", "sessionId": session_id, "error": message})
-            except Exception:
-                pass
+        target_ws = uplink if uplink is not None else control_ws
+        try:
+            _send_json(target_ws, {"type": "stream-error", "sessionId": session_id, "error": message})
+        except Exception:
+            pass
     finally:
         if proc is not None and proc.poll() is None:
             try:
@@ -259,10 +291,10 @@ def _start_job(server_url: str, token: str, job: dict, node_id: str, control_ws)
         if len(_workers) >= MAX_STREAMS:
             _send_json(control_ws, {"type": "stream-error", "sessionId": session_id, "error": "Agent stream limit reached"})
             return
-        _workers[session_id] = {"stop": threading.Event(), "mode": None}
+        _workers[session_id] = {"stop": threading.Event(), "mode": None, "proc": None}
     thread = threading.Thread(
         target=_stream_worker,
-        args=(server_url, token, dict(job), node_id),
+        args=(server_url, token, dict(job), node_id, control_ws),
         name=f"sitewatch-live-{session_id[:8]}",
         daemon=True,
     )
@@ -274,6 +306,25 @@ def _stop_job(session_id: str):
         record = _workers.get(str(session_id))
         if record:
             record["stop"].set()
+
+
+def _stop_all_workers():
+    with _workers_lock:
+        records = list(_workers.values())
+    for record in records:
+        try:
+            record["stop"].set()
+        except Exception:
+            pass
+        proc = record.get("proc")
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+
+atexit.register(_stop_all_workers)
 
 
 def live_stream_loop(server_url: str, token: str):
@@ -302,6 +353,7 @@ def live_stream_loop(server_url: str, token: str):
                 message_type = str(message.get("type") or "")
                 if message_type == "ready":
                     node_id = str(message.get("nodeId") or "")
+                    _report_stream_node(server_url, token, node_id)
                     print(f"[live] streaming control channel connected node={node_id or 'default'}", flush=True)
                 elif message_type == "stream-start":
                     _start_job(server_url, token, message, node_id, control_ws)
