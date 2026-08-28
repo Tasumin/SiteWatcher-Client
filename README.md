@@ -2,17 +2,17 @@
 
 Native Windows monitoring agent for **NodeVyu**.
 
-Current version: **1.0.0**
+Current version: **1.1.7**
 
-The supported Windows agent runs as a real Windows service named **NodeVyuAgent** using WinSW. Docker and WSL are not required.
+The supported Windows agent runs as a Windows service named **NodeVyuAgent** using WinSW. Docker and WSL are not required.
 
-The primary NodeVyu server is:
+Primary NodeVyu server:
 
 ```text
 https://nodevyu.com
 ```
 
-Existing SiteWatcher agents that use `https://monitoring.talondns.com` remain supported during the migration.
+Existing agents that still use `https://monitoring.talondns.com` remain supported during the migration.
 
 ## Features
 
@@ -24,6 +24,10 @@ Existing SiteWatcher agents that use `https://monitoring.talondns.com` remain su
 - Ping, TCP, HTTP and HTTPS monitoring
 - Multiple-CIDR LAN discovery
 - Manual discovery refresh
+- Confirmed SNMP UDP/161 discovery
+- SNMP v1/v2c on-demand walks
+- Persistent targeted SNMP OID monitoring
+- SNMP numeric, text and regex rule evaluation
 - RTSP monitoring and validated JPEG snapshots
 - Browser RTSP preview relay
 - Manual monitor retry
@@ -31,11 +35,11 @@ Existing SiteWatcher agents that use `https://monitoring.talondns.com` remain su
 - ONVIF WS-Security UsernameToken authentication
 - Per-camera ONVIF credential retry
 - Device information, media profile and RTSP URI discovery
-- Local result queue when the NodeVyu server is temporarily unavailable
-- Remote console and agent host monitoring
+- Local result queue while the NodeVyu server is unavailable
+- Remote console, reverse tunnel and agent host monitoring
 - Duplicate-worker protection
 
-## Windows Installation
+## Windows installation
 
 Run PowerShell as Administrator and use the native installer/launcher.
 
@@ -45,17 +49,11 @@ New installations default to:
 C:\NodeVyu-Agent
 ```
 
-and use:
+The installer creates the **NodeVyuAgent** Windows service and installs/upgrades Python dependencies from `requirements.txt`.
 
-```text
-https://nodevyu.com
-```
+## SiteWatcher migration
 
-The installer creates the **NodeVyuAgent** Windows service.
-
-## SiteWatcher Migration
-
-The NodeVyu installer automatically detects an existing legacy installation at:
+The NodeVyu installer automatically detects a legacy installation at:
 
 ```text
 C:\SiteWatcher-Agent
@@ -67,21 +65,9 @@ with service:
 SiteWatcherAgent
 ```
 
-During migration it:
+During migration it preserves the existing `.env`, local data, logs and agent identity, removes the old service, installs NodeVyu under `C:\NodeVyu-Agent`, and creates the `NodeVyuAgent` service. The old folder is retained for rollback/log history.
 
-1. Preserves the existing `.env`, including the agent token and current server URL.
-2. Preserves local data, logs and FFmpeg binaries where available.
-3. Stops and removes the legacy SiteWatcher Windows service.
-4. Installs NodeVyu under `C:\NodeVyu-Agent`.
-5. Creates and starts the `NodeVyuAgent` service.
-6. Reuses the existing agent identity instead of enrolling a duplicate device.
-7. Leaves the old `C:\SiteWatcher-Agent` folder in place for rollback/log history.
-
-An existing agent configured for `monitoring.talondns.com` is intentionally left on that hostname during migration. Both hostnames point to the same NodeVyu server, so the service migration does not depend on a simultaneous server URL cutover.
-
-## Service Management
-
-Use the native launcher:
+## Service management
 
 ```powershell
 .\run-sitewatcher-native.ps1 -Action Status
@@ -102,7 +88,7 @@ Restart-Service NodeVyuAgent
 
 ## Configuration
 
-NodeVyu intentionally retains the existing `SITEWATCH_*` environment variable names for backward compatibility with deployed agents and the server API.
+NodeVyu intentionally retains the existing `SITEWATCH_*` environment names for backward compatibility.
 
 New installations store configuration at:
 
@@ -118,17 +104,51 @@ SITEWATCH_AGENT_TOKEN=your-agent-token
 SITEWATCH_DISCOVERY_CIDRS=192.168.1.0/24,192.168.4.0/24
 SITEWATCH_DISCOVERY_INTERVAL_SECONDS=900
 SITEWATCH_SNAPSHOT_INTERVAL_SECONDS=300
+SITEWATCH_SNMP_DISCOVERY_COMMUNITIES=public,monitoring
 ```
 
-## Logs
+## SNMP discovery
 
-New NodeVyu agent logs are stored under:
+The normal discovery pipeline checks the existing TCP service ports and also probes **UDP/161** using a lightweight SNMP GET.
+
+A host is marked SNMP-capable only when a valid SNMP response is received. A UDP timeout is not treated as proof that port 161 is open.
+
+Default SNMP discovery community:
+
+```text
+public
+```
+
+Additional communities can be supplied with:
+
+```text
+SITEWATCH_SNMP_DISCOVERY_COMMUNITIES=public,mycommunity,monitoring
+```
+
+The discovery result reports SNMP availability/version and device description, but the working discovery community is not sent back to the server.
+
+## SNMP walks and monitors
+
+Stage 1 supports on-demand SNMP v1/v2c walks queued by the NodeVyu server and executed locally by the agent.
+
+Stage 2 uses targeted SNMP GETs for selected OIDs. Each saved monitor can use one of these healthy-state operators:
+
+- exists
+- equals / not equals
+- greater than / greater than or equal
+- less than / less than or equal
+- contains / does not contain
+- regex match / regex does not match
+
+Numeric operators compare numeric values. Regex rules are evaluated by the Python regex engine. SNMP failures and threshold mismatches are returned as normal device check details and participate in the standard device alert/recovery pipeline.
+
+## Logs
 
 ```text
 C:\NodeVyu-Agent\logs\
 ```
 
-To watch the main log:
+Watch the primary log:
 
 ```powershell
 Get-Content "C:\NodeVyu-Agent\logs\agent.log" -Wait
@@ -136,15 +156,14 @@ Get-Content "C:\NodeVyu-Agent\logs\agent.log" -Wait
 
 ## Compatibility
 
-The rebrand deliberately does **not** rename the internal Python package (`sitewatch_agent`), existing `SITEWATCH_*` configuration keys, local queue database names, or `/api/agent/*` server routes. These are implementation identifiers and keeping them stable makes upgrades safe for existing installations.
-
-The legacy `/downloads/sitewatcher-agent` server route is also supported during the migration so old agents can self-update into NodeVyu.
+The rebrand deliberately does **not** rename the internal Python package (`sitewatch_agent`), existing `SITEWATCH_*` configuration keys, local queue database names, or `/api/agent/*` routes. The legacy `/downloads/sitewatcher-agent` route is also preserved so older agents can self-update safely.
 
 ## Requirements
 
-- Windows 10/11 or Windows Server with PowerShell 5.1+
+- Windows 10/11 or Windows Server
+- PowerShell 5.1+
 - Administrator access for installation/service management
 - Network access to the NodeVyu server
-- Network access to the devices being monitored
+- LAN access to monitored devices
 
 Python, required packages, WinSW and FFmpeg are handled by the native installer where possible.
