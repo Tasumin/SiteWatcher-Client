@@ -41,6 +41,7 @@ def main() -> None:
     from .main import main as agent_main
     from . import remote_console
     from .host_monitor import host_monitor_loop
+    from .live_stream import live_stream_loop
     from .update_launcher import launch_self_update
 
     remote_console._launch_self_update = launch_self_update
@@ -52,6 +53,16 @@ def main() -> None:
     host_thread = threading.Thread(target=host_monitor_loop, name="nodevyu-host-monitor", daemon=True)
     host_thread.start()
     print("[startup] NodeVyu worker host-monitor started", flush=True)
+
+    server_url = os.environ["SITEWATCH_SERVER_URL"].rstrip("/")
+    agent_token = os.environ["SITEWATCH_AGENT_TOKEN"]
+    live_thread = threading.Thread(
+        target=lambda: live_stream_loop(server_url, agent_token),
+        name="nodevyu-live-stream",
+        daemon=True,
+    )
+    live_thread.start()
+    print("[startup] NodeVyu worker live-stream started", flush=True)
 
     # NVR stream worker is started by agent_main so there is exactly one copy.
     agent_main()
