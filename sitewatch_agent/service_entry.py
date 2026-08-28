@@ -4,6 +4,27 @@ import threading
 import time
 from pathlib import Path
 
+_SERVICE_ENTRY_MUTEX = None
+
+
+def acquire_service_entry_mutex() -> bool:
+    """Prevent duplicate Windows service_entry processes before any workers start."""
+    global _SERVICE_ENTRY_MUTEX
+    if os.name != "nt":
+        return True
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    mutex = kernel32.CreateMutexW(None, False, "Global\\NodeVyuAgent-ServiceEntry")
+    if not mutex:
+        raise OSError("Unable to create NodeVyu service-entry mutex")
+    ERROR_ALREADY_EXISTS = 183
+    if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        kernel32.CloseHandle(mutex)
+        return False
+    _SERVICE_ENTRY_MUTEX = mutex
+    return True
+
 
 def load_env(root: Path) -> None:
     env_file = root / ".env"
@@ -28,6 +49,9 @@ def load_env(root: Path) -> None:
 
 
 def main() -> None:
+    if not acquire_service_entry_mutex():
+        return
+
     root = Path(__file__).resolve().parent.parent
     os.chdir(root)
     load_env(root)
@@ -59,9 +83,6 @@ def main() -> None:
     agent_token = os.environ["SITEWATCH_AGENT_TOKEN"]
 
     def delayed_live_stream() -> None:
-        # agent_main acquires the single-instance lock immediately below.  A
-        # duplicate/recovery-launched process exits before this delay elapses,
-        # preventing it from briefly stealing the relay control socket.
         time.sleep(3)
         live_stream_loop(server_url, agent_token)
 
