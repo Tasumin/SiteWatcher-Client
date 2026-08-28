@@ -17,6 +17,7 @@ SERVER = os.environ["SITEWATCH_SERVER_URL"].rstrip("/")
 TOKEN = os.environ["SITEWATCH_AGENT_TOKEN"]
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 UPDATE_COMMAND = "__SITEWATCH_UPDATE_AGENT__"
+RESTART_AGENT_COMMAND = "__SITEWATCH_RESTART_AGENT__"
 REKEY_COMMAND = "__SITEWATCH_REKEY__"
 SCAN_PREFIX = "__SITEWATCH_IP_SCAN__|"
 LOG_PREFIX = "__SITEWATCH_GET_LOGS__|"
@@ -79,6 +80,25 @@ def _run_full(command,shell,timeout_seconds=300):
 def _launch_self_update():
     from .update_launcher import launch_self_update
     return launch_self_update()
+
+
+def _launch_service_restart():
+    """Launch a detached helper so the Windows service can safely restart itself."""
+    command = (
+        "Start-Sleep -Seconds 5; "
+        "$svc=Get-Service -Name 'NodeVyuAgent' -ErrorAction Stop; "
+        "Restart-Service -Name $svc.Name -Force -ErrorAction Stop"
+    )
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+    subprocess.Popen(
+        ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        creationflags=flags,
+    )
+    return {"scheduled": True, "delaySeconds": 5, "service": "NodeVyuAgent"}
 
 
 def _scan_host(ip, ports):
@@ -159,6 +179,14 @@ def remote_console_loop():
                 try:_launch_self_update();_post_result(command_id,{"stdout":"SiteWatcher agent update launched as SYSTEM. See logs/update.log for detailed progress.","stderr":"","exitCode":0})
                 except Exception as e:_post_result(command_id,{"stdout":"","stderr":f"Unable to start SiteWatcher update: {e}","exitCode":1})
                 time.sleep(10);continue
+            if command==RESTART_AGENT_COMMAND and shell=="system":
+                print(f"[agent] remote service restart requested job id={command_id[:8]}",flush=True)
+                try:
+                    result=_launch_service_restart()
+                    _post_result(command_id,{"stdout":json.dumps(result),"stderr":"","exitCode":0})
+                except Exception as e:
+                    _post_result(command_id,{"stdout":"","stderr":f"Unable to schedule NodeVyuAgent restart: {e}","exitCode":1})
+                continue
             if command==REKEY_COMMAND and shell=="system":
                 print(f"[agent] secure rekey job id={command_id[:8]}",flush=True)
                 try:
