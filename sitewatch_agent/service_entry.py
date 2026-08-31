@@ -14,6 +14,7 @@ _LEGACY_SERVER_URLS = {
     "https://monitoring.talondns.com",
     "http://monitoring.talondns.com",
 }
+_CA_OVERRIDE_ENV = ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR")
 
 
 def acquire_service_entry_mutex() -> bool:
@@ -37,7 +38,7 @@ def acquire_service_entry_mutex() -> bool:
         raise ctypes.WinError(ctypes.get_last_error())
 
     error = ctypes.get_last_error()
-    if error == 183:  # ERROR_ALREADY_EXISTS
+    if error == 183:
         kernel32.CloseHandle(mutex)
         return False
 
@@ -113,23 +114,28 @@ def load_env(root: Path) -> None:
         os.environ.setdefault("SITEWATCH_FFMPEG_DIR", str(ffmpeg_dir))
 
 
+def _clear_external_ca_overrides() -> list[str]:
+    cleared: list[str] = []
+    for key in _CA_OVERRIDE_ENV:
+        if os.environ.pop(key, None) is not None:
+            cleared.append(key)
+    return cleared
+
+
 def main() -> None:
     root = Path(__file__).resolve().parent.parent
     os.chdir(root)
 
-    # These guards must run before environment loading, logging, imports, or
-    # worker startup. If any service/update path recursively launches another
-    # service_entry process, the child exits without touching the relay.
     if not acquire_service_entry_mutex():
         return
     if not acquire_service_entry_file_lock(root):
         return
 
     load_env(root)
+    cleared_ca = _clear_external_ca_overrides()
 
-    # Some local appliance HTTPS checks intentionally use verify=False. Keep
-    # those expected urllib3 warnings out of agent.log without weakening TLS
-    # verification for the NodeVyu API itself.
+    # Local appliances may intentionally use verify=False. Suppress only that
+    # warning; NodeVyu API requests continue to validate certificates normally.
     warnings.filterwarnings("ignore", category=InsecureRequestWarning, module=r"urllib3\.connectionpool")
 
     log_dir = root / "logs"
@@ -145,6 +151,8 @@ def main() -> None:
 
     print(f"[startup] logging split enabled path={log_dir}", flush=True)
     print(f"[startup] server={os.environ.get('SITEWATCH_SERVER_URL')}", flush=True)
+    if cleared_ca:
+        print(f"[startup] ignored external CA overrides for NodeVyu API: {','.join(cleared_ca)}", flush=True)
 
     remote_console._launch_self_update = launch_self_update
 
@@ -163,16 +171,21 @@ def main() -> None:
         time.sleep(3)
         live_stream_loop(server_url, agent_token)
 
-    live_thread = threading.Thread(
-        target=delayed_live_stream,
-        name="nodevyu-live-stream",
-        daemon=True,
-    )
+    live_thread = threading.Thread(target=delayed_live_stream, name="nodevyu-live-stream", daemon=True)
     live_thread.start()
     print("[startup] NodeVyu worker live-stream scheduled", flush=True)
 
-    # NVR stream worker is started by agent_main so there is exactly one copy.
-    agent_main()
+    # Keep the service process and already-running live/tunnel workers alive if
+    # the monitoring scheduler ever escapes unexpectedly.
+    while True:
+        try:
+            agent_main()
+            print("[startup] monitoring main loop returned unexpectedly; restarting in 5s", flush=True)
+        except KeyboardInterrupt:
+            raise
+        except BaseException as exc:
+            print(f"[startup] monitoring main loop crashed: {type(exc).__name__}: {exc}; restarting in 5s", flush=True)
+        time.sleep(5)
 
 
 if __name__ == "__main__":
