@@ -2,7 +2,7 @@
 
 Native Windows monitoring agent for **NodeVyu**.
 
-Current version: **1.1.7**
+Current version: **1.1.19**
 
 The supported Windows agent runs as a Windows service named **NodeVyuAgent** using WinSW. Docker and WSL are not required.
 
@@ -38,6 +38,7 @@ Existing agents that still use `https://monitoring.talondns.com` remain supporte
 - Local result queue while the NodeVyu server is unavailable
 - Remote console, reverse tunnel and agent host monitoring
 - Duplicate-worker protection
+- Timestamped subsystem log files
 
 ## Windows installation
 
@@ -107,48 +108,13 @@ SITEWATCH_SNAPSHOT_INTERVAL_SECONDS=300
 SITEWATCH_SNMP_DISCOVERY_COMMUNITIES=public,monitoring
 ```
 
-## SNMP discovery
-
-The normal discovery pipeline checks the existing TCP service ports and also probes **UDP/161** using a lightweight SNMP GET.
-
-A host is marked SNMP-capable only when a valid SNMP response is received. A UDP timeout is not treated as proof that port 161 is open.
-
-Default SNMP discovery community:
-
-```text
-public
-```
-
-Additional communities can be supplied with:
-
-```text
-SITEWATCH_SNMP_DISCOVERY_COMMUNITIES=public,mycommunity,monitoring
-```
-
-The discovery result reports SNMP availability/version and device description, but the working discovery community is not sent back to the server.
-
-## SNMP walks and monitors
-
-Stage 1 supports on-demand SNMP v1/v2c walks queued by the NodeVyu server and executed locally by the agent.
-
-Stage 2 uses targeted SNMP GETs for selected OIDs. Each saved monitor can use one of these healthy-state operators:
-
-- exists
-- equals / not equals
-- greater than / greater than or equal
-- less than / less than or equal
-- contains / does not contain
-- regex match / regex does not match
-
-Numeric operators compare numeric values. Regex rules are evaluated by the Python regex engine. SNMP failures and threshold mismatches are returned as normal device check details and participate in the standard device alert/recovery pipeline.
-
 ## Logs
 
 ```text
 C:\NodeVyu-Agent\logs\
 ```
 
-Watch the primary log:
+Current subsystem log files are timestamped with the agent machine's local timezone. Watch the primary log:
 
 ```powershell
 Get-Content "C:\NodeVyu-Agent\logs\agent.log" -Wait
