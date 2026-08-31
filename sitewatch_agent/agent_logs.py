@@ -13,6 +13,11 @@ MAX_FILES = 8
 MAX_ZIP_FILES = 32
 
 
+def _root_and_log_dir() -> tuple[Path, Path]:
+    root = Path(__file__).resolve().parent.parent
+    return root, root / "logs"
+
+
 def _tail_text(path: Path, lines: int) -> str:
     try:
         text = path.read_text(encoding="utf-8-sig", errors="replace")
@@ -22,10 +27,34 @@ def _tail_text(path: Path, lines: int) -> str:
     return "\n".join(rows[-lines:])
 
 
+def _log_meta(path: Path) -> str:
+    try:
+        stat = path.stat()
+        return f"{path.name} | {stat.st_size} bytes | modified {stat.st_mtime_ns}"
+    except Exception:
+        return path.name
+
+
+def _safe_log_path(filename: str) -> Path:
+    name = str(filename or "").strip()
+    if not name or name != Path(name).name or not name.lower().endswith(".log"):
+        raise ValueError("Invalid log filename")
+    _, log_dir = _root_and_log_dir()
+    path = log_dir / name
+    if not path.is_file():
+        raise FileNotFoundError(f"Log file not found: {name}")
+    return path
+
+
+def collect_agent_log(filename: str, lines: int = 250) -> dict:
+    lines = max(50, min(1000, int(lines or 250)))
+    path = _safe_log_path(filename)
+    return {"name": path.name, "meta": _log_meta(path), "content": _tail_text(path, lines)}
+
+
 def collect_agent_logs(lines: int = 250) -> str:
     lines = max(50, min(1000, int(lines or 250)))
-    root = Path(__file__).resolve().parent.parent
-    log_dir = root / "logs"
+    root, log_dir = _root_and_log_dir()
 
     sections: list[str] = [
         "SiteWatcher Agent Diagnostics",
@@ -49,19 +78,7 @@ def collect_agent_logs(lines: int = 250) -> str:
         return "\n".join(sections)
 
     for path in files:
-        try:
-            stat = path.stat()
-            meta = f"{path.name} | {stat.st_size} bytes | modified {stat.st_mtime_ns}"
-        except Exception:
-            meta = path.name
-        body = _tail_text(path, lines)
-        sections.extend([
-            "=" * 78,
-            meta,
-            "=" * 78,
-            body,
-            "",
-        ])
+        sections.extend(["=" * 78, _log_meta(path), "=" * 78, _tail_text(path, lines), ""])
         current = "\n".join(sections)
         if len(current) >= MAX_OUTPUT_CHARS:
             return current[:MAX_OUTPUT_CHARS] + "\n[log output truncated]"
@@ -71,8 +88,7 @@ def collect_agent_logs(lines: int = 250) -> str:
 
 def create_agent_logs_zip() -> str:
     """Create a ZIP containing the complete current SiteWatcher log files."""
-    root = Path(__file__).resolve().parent.parent
-    log_dir = root / "logs"
+    root, log_dir = _root_and_log_dir()
     fd, temp_path = tempfile.mkstemp(prefix="sitewatcher-logs-", suffix=".zip")
     os.close(fd)
 
