@@ -2,7 +2,10 @@ import os
 import sys
 import threading
 import time
+import warnings
 from pathlib import Path
+
+from urllib3.exceptions import InsecureRequestWarning
 
 _SERVICE_ENTRY_MUTEX = None
 _SERVICE_ENTRY_LOCK = None
@@ -123,6 +126,11 @@ def main() -> None:
         return
 
     load_env(root)
+
+    # Some local appliance HTTPS checks intentionally use verify=False. Keep
+    # those expected urllib3 warnings out of agent.log without weakening TLS
+    # verification for the NodeVyu API itself.
+    warnings.filterwarnings("ignore", category=InsecureRequestWarning, module=r"urllib3\.connectionpool")
 
     log_dir = root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
