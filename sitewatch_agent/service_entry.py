@@ -182,7 +182,8 @@ def main() -> None:
             agent_main()
             print("[startup] monitoring main loop returned unexpectedly; restarting in 5s", flush=True)
         except KeyboardInterrupt:
-            raise
+            print("[shutdown] service stop requested; exiting cleanly", flush=True)
+            return
         except BaseException as exc:
             print(f"[startup] monitoring main loop crashed: {type(exc).__name__}: {exc}; restarting in 5s", flush=True)
         time.sleep(5)
