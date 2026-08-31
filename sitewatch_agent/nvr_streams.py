@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 
 import requests
 
-from .checks import rtsp, capture_snapshot
+from .checks import RTSPProbeSkipped, rtsp, capture_snapshot
+from .viewing_window import is_viewing
 
 SERVER = os.environ["SITEWATCH_SERVER_URL"].rstrip("/")
 TOKEN = os.environ["SITEWATCH_AGENT_TOKEN"]
@@ -82,10 +83,25 @@ def nvr_stream_loop():
                     if not force_validation and now < next_due.get(sid, 0):
                         continue
                     next_due[sid] = now + interval
+                    if not force_validation and is_viewing("nvr_stream", str(sid)):
+                        print(f"[nvr] RTSP probe skipped stream={sid} name={stream.get('name')} channel={channel} reason=viewing_window", flush=True)
+                        continue
                     started = time.monotonic()
                     if force_validation:
                         print(f"[nvr] validating {stream.get('name')} channel={channel} request={validation_requested_at} preview={preview_validation}", flush=True)
-                    ok, latency, error = rtsp(url, username, password, timeout)
+                    try:
+                        ok, latency, error = rtsp(
+                            url,
+                            username,
+                            password,
+                            timeout,
+                            probe_context=f"nvr_stream={sid} name={stream.get('name')} channel={channel}",
+                            viewing_source=None if force_validation else ("nvr_stream", str(sid)),
+                            use_probe_limit=not force_validation,
+                        )
+                    except RTSPProbeSkipped:
+                        print(f"[nvr] RTSP probe skipped stream={sid} name={stream.get('name')} channel={channel} reason=viewing_window", flush=True)
+                        continue
                     message = "RTSP stream available" if ok else (error or "RTSP stream unavailable")
                     payload = {
                         "deviceId": device["id"],

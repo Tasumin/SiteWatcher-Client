@@ -1,4 +1,4 @@
-import os, subprocess, socket, time, ssl, shutil, re
+import os, subprocess, socket, time, ssl, shutil, re, threading
 from urllib.parse import urlparse, urlunparse
 import requests
 from requests.adapters import HTTPAdapter
@@ -8,6 +8,12 @@ from .viewing_window import is_viewing
 
 IS_WINDOWS = os.name == "nt"
 CREATE_FLAGS = subprocess.CREATE_NO_WINDOW if IS_WINDOWS and hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+RTSP_PROBE_CONCURRENCY = max(1, min(16, int(os.getenv("SITEWATCH_MAX_RTSP_PROBES", "2"))))
+_rtsp_probe_slots = threading.BoundedSemaphore(RTSP_PROBE_CONCURRENCY)
+
+
+class RTSPProbeSkipped(RuntimeError):
+    pass
 
 
 def _tool(name: str) -> str:
@@ -64,14 +70,43 @@ def _rtsp_with_credentials(url: str, username: str | None, password: str | None)
     return urlunparse((p.scheme, f"{auth}@{p.hostname}" + (f":{p.port}" if p.port else ""), p.path, p.params, p.query, p.fragment))
 
 
-def rtsp(url: str, username: str | None, password: str | None, timeout: int):
+def _stop_process(proc):
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        proc.terminate(); proc.wait(timeout=2)
+    except Exception:
+        try: proc.kill(); proc.wait(timeout=2)
+        except Exception: pass
+
+
+def rtsp(url: str, username: str | None, password: str | None, timeout: int, *, probe_context: str = "scheduled", viewing_source=None, use_probe_limit: bool = True):
     target = _rtsp_with_credentials(url, username, password); start = time.monotonic()
     cmd = [_tool("ffprobe"), "-v", "error", "-rtsp_transport", "tcp", "-timeout", str(timeout * 1_000_000), "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height", "-of", "json", target]
+    acquired = False; proc = None
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 3, creationflags=CREATE_FLAGS)
-        ok = p.returncode == 0 and '"streams"' in p.stdout and '"codec_name"' in p.stdout; err = None if ok else (p.stderr.strip()[-500:] or "RTSP stream unavailable")
+        if use_probe_limit:
+            _rtsp_probe_slots.acquire(); acquired = True
+        if viewing_source and is_viewing(str(viewing_source[0]), str(viewing_source[1])):
+            raise RTSPProbeSkipped("Viewing Window active")
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=CREATE_FLAGS)
+        print(f"[check] RTSP probe started source={probe_context} pid={proc.pid} scheduled={'yes' if use_probe_limit else 'no'}", flush=True)
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout + 3)
+        except subprocess.TimeoutExpired:
+            _stop_process(proc)
+            return False, int((time.monotonic() - start) * 1000), "RTSP connection timeout"
+        ok = proc.returncode == 0 and '"streams"' in stdout and '"codec_name"' in stdout
+        err = None if ok else (stderr.strip()[-500:] or "RTSP stream unavailable")
         return ok, int((time.monotonic() - start) * 1000), err
-    except Exception as e: return False, int((time.monotonic() - start) * 1000), str(e)
+    except RTSPProbeSkipped:
+        raise
+    except Exception as e:
+        _stop_process(proc)
+        return False, int((time.monotonic() - start) * 1000), str(e)
+    finally:
+        if acquired:
+            _rtsp_probe_slots.release()
 
 
 def _numeric(value):
@@ -106,6 +141,15 @@ def snmp_check(host: str, check: dict, timeout: int):
     return False,latency,f"SNMP value {value!r} did not satisfy {check.get('operator') or 'exists'} {check.get('threshold') or ''}".strip(),value
 
 
+def _viewing_source(device: dict):
+    device_id = str(device.get("id") or "")
+    if not device_id:
+        return None
+    if device_id.startswith("nvr-"):
+        return "nvr_stream", device_id[4:]
+    return "device", device_id
+
+
 def run_device(device: dict):
     host = device["host"]; timeout = int(device.get("timeoutSeconds", 8)); details = []; max_latency = 0
     for check in device.get("checks", []):
@@ -115,7 +159,14 @@ def run_device(device: dict):
         elif typ in ("http", "https"):
             url = check.get("url") or f"{typ}://{host}{check.get('path') or '/'}"; ok, latency, error = http_check(url, timeout, check.get("verifyTls", True), check.get("legacyTls", False))
         elif typ == "rtsp":
-            url = check.get("url") or f"rtsp://{host}:554/"; ok, latency, error = rtsp(url, check.get("username"), check.get("password"), timeout)
+            url = check.get("url") or f"rtsp://{host}:554/"
+            source = _viewing_source(device)
+            try:
+                ok, latency, error = rtsp(url, check.get("username"), check.get("password"), timeout, probe_context=f"device={device.get('id')} name={device.get('name')}", viewing_source=source)
+            except RTSPProbeSkipped:
+                ok, latency, error = True, 0, None
+                extra={"skipped":True,"skipReason":"viewing_window"}
+                print(f"[check] RTSP probe skipped device={device.get('id')} name={device.get('name')} reason=viewing_window", flush=True)
         elif typ == "snmp":
             ok,latency,error,value=snmp_check(host,check,timeout); extra={"checkId":check.get("id"),"name":check.get("name"),"oid":check.get("oid"),"value":value,"operator":check.get("operator"),"threshold":check.get("threshold")}
         else: ok, latency, error = False, 0, f"Unknown check type: {typ}"
@@ -138,12 +189,8 @@ def _valid_jpeg(data: bytes):
 
 
 def _snapshot_paused_for_viewing(device: dict) -> bool:
-    device_id = str(device.get("id") or "")
-    if not device_id:
-        return False
-    if device_id.startswith("nvr-"):
-        return is_viewing("nvr_stream", device_id[4:])
-    return is_viewing("device", device_id)
+    source = _viewing_source(device)
+    return bool(source and is_viewing(source[0], source[1]))
 
 
 def capture_snapshot(device: dict):

@@ -38,19 +38,39 @@ def _redact(text: str) -> str:
     return re.sub(r"(rtsp://[^:/\s@]+:)[^@\s]+@", r"\1*****@", str(text or ""), flags=re.I)[-1200:]
 
 
-def _probe(target: str, timeout: int):
+def _stop_probe(proc):
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        proc.terminate(); proc.wait(timeout=2)
+    except Exception:
+        try: proc.kill(); proc.wait(timeout=2)
+        except Exception: pass
+
+
+def _probe(target: str, timeout: int, session_id: str):
     cmd = [
         _tool("ffprobe"), "-v", "error", "-rtsp_transport", "tcp",
         "-timeout", str(timeout * 1_000_000),
         "-show_entries", "stream=codec_type,codec_name,width,height,bit_rate,avg_frame_rate",
         "-of", "json", target,
     ]
+    proc = None
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 3, creationflags=CREATE_FLAGS)
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("RTSP connection timeout") from exc
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=CREATE_FLAGS)
+        print(f"[live] RTSP probe started session={session_id[:8]} pid={proc.pid}", flush=True)
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout + 3)
+        except subprocess.TimeoutExpired as exc:
+            _stop_probe(proc)
+            raise RuntimeError("RTSP connection timeout") from exc
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        _stop_probe(proc)
+        raise RuntimeError(str(exc)) from exc
     if proc.returncode != 0:
-        err = _redact(proc.stderr)
+        err = _redact(stderr)
         low = err.lower()
         if "401" in low or "unauthorized" in low or "authentication" in low:
             raise RuntimeError("RTSP authentication failed")
@@ -60,7 +80,7 @@ def _probe(target: str, timeout: int):
             raise RuntimeError("RTSP connection refused")
         raise RuntimeError(err or "Unable to open RTSP stream")
     try:
-        streams = json.loads(proc.stdout or "{}").get("streams") or []
+        streams = json.loads(stdout or "{}").get("streams") or []
         video = next((stream for stream in streams if str(stream.get("codec_type") or "").lower() == "video"), None)
         audio = next((stream for stream in streams if str(stream.get("codec_type") or "").lower() == "audio"), None)
     except Exception as exc:
@@ -174,7 +194,7 @@ def _stream_worker(server_url: str, token: str, job: dict, node_id: str, control
 
         enter_viewing_window(source_type, source_id, session_id)
         target = _rtsp_with_credentials(url, username, password)
-        probe = _probe(target, timeout)
+        probe = _probe(target, timeout, session_id)
         info = probe["video"]
         audio_info = probe.get("audio")
         has_audio = bool(audio_info and audio_info.get("codec_name"))
