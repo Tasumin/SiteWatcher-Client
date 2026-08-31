@@ -8,7 +8,7 @@ import time
 
 import requests
 
-from .agent_logs import collect_agent_logs, create_agent_logs_zip
+from .agent_logs import collect_agent_log, collect_agent_logs, create_agent_logs_zip
 from .tightvnc import get_tightvnc_status, install_tightvnc, restart_tightvnc, uninstall_tightvnc
 from .virtual_display_repair import get_virtual_display_status, manage_virtual_display
 from .rekey import apply_pending_rekey
@@ -21,6 +21,7 @@ RESTART_AGENT_COMMAND = "__SITEWATCH_RESTART_AGENT__"
 REKEY_COMMAND = "__SITEWATCH_REKEY__"
 SCAN_PREFIX = "__SITEWATCH_IP_SCAN__|"
 LOG_PREFIX = "__SITEWATCH_GET_LOGS__|"
+LOG_FILE_PREFIX = "__SITEWATCH_GET_LOG_FILE__|"
 LOG_BUNDLE_COMMAND = "__SITEWATCH_DOWNLOAD_LOGS__"
 VNC_STATUS_COMMAND = "__SITEWATCH_VNC_STATUS__"
 VNC_INSTALL_COMMAND = "__SITEWATCH_VNC_INSTALL__"
@@ -36,6 +37,9 @@ BLOCKED_TOKENS = (";", "&&", "||", "|", ">", "<", "`", "$(", "@(")
 ALLOWED_PREFIXES = ("ping ","ping.exe ","tracert ","tracert.exe ","pathping ","pathping.exe ","nslookup ","nslookup.exe ","curl ","curl.exe ","arp ","arp.exe ","ipconfig","route print","route.exe print","netstat ","netstat.exe ","test-netconnection ","resolve-dnsname ","get-netipaddress","get-netroute","get-netadapter","get-nettcpconnection","get-netneighbor","get-dnsclient","get-dnsclientserveraddress","invoke-webrequest ","invoke-restmethod ")
 FULL_SHELLS = ("powershell_full", "cmd_full")
 OUTPUT_LIMIT = 200000
+
+_HTTP = requests.Session()
+_HTTP.trust_env = False
 
 
 def _allowed(command:str):
@@ -58,8 +62,7 @@ def _execute(command, shell, timeout_seconds):
         stderr=e.stderr.decode(errors="replace") if isinstance(e.stderr,bytes) else str(e.stderr or "")
         timeout_message=f"Command timed out after {timeout_seconds} seconds."
         return {"stdout":stdout[:OUTPUT_LIMIT],"stderr":((stderr+"\n" if stderr else "")+timeout_message)[:OUTPUT_LIMIT],"exitCode":None,"timedOut":True}
-    except Exception as e:
-        return {"stdout":"","stderr":str(e),"exitCode":1}
+    except Exception as e:return {"stdout":"","stderr":str(e),"exitCode":1}
 
 
 def _run(command,shell,timeout_seconds=60):
@@ -69,10 +72,8 @@ def _run(command,shell,timeout_seconds=60):
 
 
 def _run_full(command,shell,timeout_seconds=300):
-    if shell not in FULL_SHELLS:
-        return {"stdout":"","stderr":"Unsupported full-access shell.","exitCode":None,"rejected":True}
-    if not command.strip():
-        return {"stdout":"","stderr":"Command is empty.","exitCode":None,"rejected":True}
+    if shell not in FULL_SHELLS:return {"stdout":"","stderr":"Unsupported full-access shell.","exitCode":None,"rejected":True}
+    if not command.strip():return {"stdout":"","stderr":"Command is empty.","exitCode":None,"rejected":True}
     print(f"[console] FULL ADMIN execution shell={shell} chars={len(command)}",flush=True)
     return _execute(command,shell,timeout_seconds)
 
@@ -83,22 +84,10 @@ def _launch_self_update():
 
 
 def _launch_service_restart():
-    """Launch a detached helper so the Windows service can safely restart itself."""
-    command = (
-        "Start-Sleep -Seconds 5; "
-        "$svc=Get-Service -Name 'NodeVyuAgent' -ErrorAction Stop; "
-        "Restart-Service -Name $svc.Name -Force -ErrorAction Stop"
-    )
-    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-    subprocess.Popen(
-        ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        close_fds=True,
-        creationflags=flags,
-    )
-    return {"scheduled": True, "delaySeconds": 5, "service": "NodeVyuAgent"}
+    command=("Start-Sleep -Seconds 5; $svc=Get-Service -Name 'NodeVyuAgent' -ErrorAction Stop; Restart-Service -Name $svc.Name -Force -ErrorAction Stop")
+    flags=getattr(subprocess,"CREATE_NO_WINDOW",0)|getattr(subprocess,"CREATE_NEW_PROCESS_GROUP",0)|getattr(subprocess,"DETACHED_PROCESS",0)
+    subprocess.Popen(["powershell.exe","-NoLogo","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-Command",command],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True,creationflags=flags)
+    return {"scheduled":True,"delaySeconds":5,"service":"NodeVyuAgent"}
 
 
 def _scan_host(ip, ports):
@@ -127,19 +116,18 @@ def _scan_network(cidr, ports=None):
         if port<1 or port>65535:raise ValueError(f"Invalid TCP port: {port}")
         if port not in scan_ports:scan_ports.append(port)
     if len(scan_ports)>72:raise ValueError("Too many scan ports requested.")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=48) as pool:
-        r=[x for x in pool.map(lambda ip:_scan_host(ip,scan_ports),[str(i) for i in n.hosts()]) if x]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=48) as pool:r=[x for x in pool.map(lambda ip:_scan_host(ip,scan_ports),[str(i) for i in n.hosts()]) if x]
     r.sort(key=lambda row:tuple(int(x) for x in row["ip"].split(".")));return r
 
 
 def _post_result(command_id,result):
-    result["id"]=command_id;r=requests.post(SERVER+"/api/agent/commands",headers=HEADERS,json=result,timeout=20);r.raise_for_status()
+    result["id"]=command_id;r=_HTTP.post(SERVER+"/api/agent/commands",headers=HEADERS,json=result,timeout=20);r.raise_for_status()
 
 
 def _upload_log_bundle(command_id):
     z=create_agent_logs_zip()
     try:
-        with open(z,"rb") as h:r=requests.post(SERVER+f"/api/agent/log-bundles?id={command_id}",headers={"Authorization":f"Bearer {TOKEN}","Content-Type":"application/zip"},data=h,timeout=180);r.raise_for_status()
+        with open(z,"rb") as h:r=_HTTP.post(SERVER+f"/api/agent/log-bundles?id={command_id}",headers={"Authorization":f"Bearer {TOKEN}","Content-Type":"application/zip"},data=h,timeout=180);r.raise_for_status()
     finally:
         try:os.remove(z)
         except OSError:pass
@@ -168,7 +156,7 @@ def remote_console_loop():
     time.sleep(3)
     while True:
         try:
-            response=requests.get(SERVER+"/api/agent/commands",headers=HEADERS,timeout=20)
+            response=_HTTP.get(SERVER+"/api/agent/commands",headers=HEADERS,timeout=20)
             if not response.ok:
                 if response.status_code!=404:print(f"[console] server HTTP {response.status_code}: {response.text[:200]}",flush=True)
                 time.sleep(3);continue
@@ -181,19 +169,13 @@ def remote_console_loop():
                 time.sleep(10);continue
             if command==RESTART_AGENT_COMMAND and shell=="system":
                 print(f"[agent] remote service restart requested job id={command_id[:8]}",flush=True)
-                try:
-                    result=_launch_service_restart()
-                    _post_result(command_id,{"stdout":json.dumps(result),"stderr":"","exitCode":0})
-                except Exception as e:
-                    _post_result(command_id,{"stdout":"","stderr":f"Unable to schedule NodeVyuAgent restart: {e}","exitCode":1})
+                try:_post_result(command_id,{"stdout":json.dumps(_launch_service_restart()),"stderr":"","exitCode":0})
+                except Exception as e:_post_result(command_id,{"stdout":"","stderr":f"Unable to schedule NodeVyuAgent restart: {e}","exitCode":1})
                 continue
             if command==REKEY_COMMAND and shell=="system":
                 print(f"[agent] secure rekey job id={command_id[:8]}",flush=True)
-                try:
-                    result=apply_pending_rekey(SERVER,TOKEN)
-                    _post_result(command_id,{"stdout":json.dumps(result),"stderr":"","exitCode":0})
-                except Exception as e:
-                    _post_result(command_id,{"stdout":"","stderr":f"Agent rekey failed: {e}","exitCode":1})
+                try:_post_result(command_id,{"stdout":json.dumps(apply_pending_rekey(SERVER,TOKEN)),"stderr":"","exitCode":0})
+                except Exception as e:_post_result(command_id,{"stdout":"","stderr":f"Agent rekey failed: {e}","exitCode":1})
                 continue
             if command in (VNC_STATUS_COMMAND,VNC_INSTALL_COMMAND,VNC_RESTART_COMMAND,VNC_UNINSTALL_COMMAND) and shell=="system":
                 print(f"[vnc] maintenance command={command} job id={command_id[:8]}",flush=True)
@@ -209,6 +191,12 @@ def remote_console_loop():
                 try:_upload_log_bundle(command_id);_post_result(command_id,{"stdout":"Full log bundle ready for download.","stderr":"","exitCode":0})
                 except Exception as e:_post_result(command_id,{"stdout":"","stderr":f"Unable to upload full log bundle: {e}","exitCode":1})
                 continue
+            if command.startswith(LOG_FILE_PREFIX) and shell=="system":
+                try:
+                    payload=command[len(LOG_FILE_PREFIX):];line_text,filename=payload.split("|",1);lines=max(50,min(1000,int(line_text or "250")))
+                    _post_result(command_id,{"stdout":json.dumps(collect_agent_log(filename,lines)),"stderr":"","exitCode":0})
+                except Exception as e:_post_result(command_id,{"stdout":"","stderr":f"Unable to collect selected agent log: {e}","exitCode":1})
+                continue
             if command.startswith(LOG_PREFIX) and shell=="system":
                 try:lines=max(50,min(1000,int(command[len(LOG_PREFIX):].strip() or "250")))
                 except ValueError:lines=250
@@ -217,17 +205,11 @@ def remote_console_loop():
                 continue
             if command.startswith(SCAN_PREFIX) and shell=="system":
                 try:
-                    payload=command[len(SCAN_PREFIX):]
-                    parts=payload.split("|",1)
-                    cidr=parts[0].strip()
-                    ports=None
+                    payload=command[len(SCAN_PREFIX):];parts=payload.split("|",1);cidr=parts[0].strip();ports=None
                     if len(parts)>1 and parts[1].strip():ports=[int(x) for x in parts[1].split(",") if x.strip()]
-                    hosts=_scan_network(cidr,ports)
-                    _post_result(command_id,{"stdout":json.dumps({"cidr":cidr,"ports":ports or list(SCAN_PORTS),"hosts":hosts}),"stderr":"","exitCode":0})
+                    hosts=_scan_network(cidr,ports);_post_result(command_id,{"stdout":json.dumps({"cidr":cidr,"ports":ports or list(SCAN_PORTS),"hosts":hosts}),"stderr":"","exitCode":0})
                 except Exception as e:_post_result(command_id,{"stdout":"","stderr":str(e),"exitCode":1})
                 continue
-            if shell in FULL_SHELLS:
-                _post_result(command_id,_run_full(command,shell,300))
-                continue
+            if shell in FULL_SHELLS:_post_result(command_id,_run_full(command,shell,300));continue
             _post_result(command_id,_run(command,shell))
         except Exception as e:print(f"[console] worker error: {e}",flush=True);time.sleep(5)
