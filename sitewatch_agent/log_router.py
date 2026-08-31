@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import threading
+from datetime import datetime
 from pathlib import Path
 
 
@@ -39,9 +40,18 @@ class RoutedLogStream:
                 return name
         return self.fallback_name
 
+    def _timestamp(self) -> str:
+        return datetime.now().astimezone().isoformat(timespec="milliseconds").replace("T", " ")
+
     def _emit(self, line: str) -> None:
         name = self._destination(line)
-        self._handle(name).write(line + "\n")
+        if not line:
+            stamped = ""
+        elif line.startswith("[") and len(line) > 5 and line[1:5].isdigit():
+            stamped = line
+        else:
+            stamped = f"[{self._timestamp()}] {line}"
+        self._handle(name).write(stamped + "\n")
 
     def write(self, text: str) -> int:
         if not text:
