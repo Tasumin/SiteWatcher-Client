@@ -70,6 +70,29 @@ def _rtsp_with_credentials(url: str, username: str | None, password: str | None)
     return urlunparse((p.scheme, f"{auth}@{p.hostname}" + (f":{p.port}" if p.port else ""), p.path, p.params, p.query, p.fragment))
 
 
+def _safe_target_url(value):
+    if not value: return None
+    text = str(value)
+    try:
+        p = urlparse(text)
+        host = p.hostname or ""
+        if ":" in host and not host.startswith("["): host = f"[{host}]"
+        netloc = host + (f":{p.port}" if p.port else "")
+        return urlunparse((p.scheme, netloc, p.path, p.params, p.query, ""))
+    except Exception:
+        return re.sub(r"(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@", r"\1", text)
+
+
+def _safe_error(value):
+    if value is None: return None
+    return re.sub(r"(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@", r"\1", str(value))[-1000:]
+
+
+def _url_port(value, default):
+    try: return int(urlparse(str(value)).port or default)
+    except Exception: return int(default)
+
+
 def _stop_process(proc):
     if proc is None or proc.poll() is not None:
         return
@@ -153,24 +176,35 @@ def _viewing_source(device: dict):
 def run_device(device: dict):
     host = device["host"]; timeout = int(device.get("timeoutSeconds", 8)); details = []; max_latency = 0
     for check in device.get("checks", []):
-        typ = check["type"]; extra={}
-        if typ == "ping": ok, latency, error = ping(host, timeout)
-        elif typ == "tcp": ok, latency, error = tcp(host, check.get("port") or 80, timeout)
+        typ = check["type"]; extra={"host":host}
+        if typ == "ping":
+            ok, latency, error = ping(host, timeout)
+        elif typ == "tcp":
+            port = int(check.get("port") or 80); ok, latency, error = tcp(host, port, timeout); extra.update({"port":port})
         elif typ in ("http", "https"):
-            url = check.get("url") or f"{typ}://{host}{check.get('path') or '/'}"; ok, latency, error = http_check(url, timeout, check.get("verifyTls", True), check.get("legacyTls", False))
+            default_port = 443 if typ == "https" else 80
+            configured_port = int(check.get("port") or default_port)
+            path = check.get("path") or "/"
+            port_suffix = "" if configured_port == default_port else f":{configured_port}"
+            url = check.get("url") or f"{typ}://{host}{port_suffix}{path}"
+            ok, latency, error = http_check(url, timeout, check.get("verifyTls", True), check.get("legacyTls", False))
+            extra.update({"port":_url_port(url,configured_port),"url":_safe_target_url(url),"path":path})
         elif typ == "rtsp":
-            url = check.get("url") or f"rtsp://{host}:554/"
+            configured_port = int(check.get("port") or 554)
+            url = check.get("url") or f"rtsp://{host}:{configured_port}/"
+            extra.update({"port":_url_port(url,configured_port),"url":_safe_target_url(url),"path":urlparse(url).path or "/"})
             source = _viewing_source(device)
             try:
                 ok, latency, error = rtsp(url, check.get("username"), check.get("password"), timeout, probe_context=f"device={device.get('id')} name={device.get('name')}", viewing_source=source)
             except RTSPProbeSkipped:
                 ok, latency, error = True, 0, None
-                extra={"skipped":True,"skipReason":"viewing_window"}
+                extra.update({"skipped":True,"skipReason":"viewing_window"})
                 print(f"[check] RTSP probe skipped device={device.get('id')} name={device.get('name')} reason=viewing_window", flush=True)
         elif typ == "snmp":
-            ok,latency,error,value=snmp_check(host,check,timeout); extra={"checkId":check.get("id"),"name":check.get("name"),"oid":check.get("oid"),"value":value,"operator":check.get("operator"),"threshold":check.get("threshold")}
+            port=int(check.get("port") or 161)
+            ok,latency,error,value=snmp_check(host,check,timeout); extra.update({"port":port,"checkId":check.get("id"),"name":check.get("name"),"oid":check.get("oid"),"value":value,"operator":check.get("operator"),"threshold":check.get("threshold")})
         else: ok, latency, error = False, 0, f"Unknown check type: {typ}"
-        max_latency = max(max_latency, latency); details.append({"type": typ, "ok": ok, "latencyMs": latency, "error": error, **extra})
+        max_latency = max(max_latency, latency); details.append({"type": typ, "ok": ok, "latencyMs": latency, "error": _safe_error(error), **extra})
     overall = all(x["ok"] for x in details) if details else False; failed = [x.get("name") or x["type"] for x in details if not x["ok"]]
     return {"deviceId": device["id"], "deviceName": device["name"], "observedAt": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(), "overallOk": overall, "latencyMs": max_latency, "message": "All checks passed" if overall else f"Failed checks: {', '.join(failed)}", "checks": details}
 
