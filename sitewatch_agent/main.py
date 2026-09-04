@@ -8,6 +8,7 @@ from .onvif import probe_onvif
 from .snmp import run_snmp_walk
 from .remote_tunnel import remote_tunnel_loop
 from .nvr_streams import nvr_stream_loop
+from .beta_features import plugin_capabilities, resolve_ai_detection_beta
 
 SERVER = os.environ["SITEWATCH_SERVER_URL"].rstrip("/")
 TOKEN = os.environ["SITEWATCH_AGENT_TOKEN"]
@@ -72,12 +73,14 @@ def fetch_config():
     for d in config.get("devices", []): next_due.setdefault(d["id"], 0)
     current_request = config.get("discoveryRequestedAt")
     if current_request and current_request != previous_request and current_request != last_discovery_request: print(f"[discovery] manual refresh requested at {current_request}", flush=True)
-    print(f"[config] version={config.get('configVersion')} devices={len(config.get('devices', []))}", flush=True)
+    ai_enabled, ai_source = resolve_ai_detection_beta(config)
+    print(f"[config] version={config.get('configVersion')} devices={len(config.get('devices', []))} ai_detection_beta={'enabled' if ai_enabled else 'disabled'} source={ai_source}", flush=True)
 
 def heartbeat():
     while True:
         try:
-            r = api("POST", "/api/agent/heartbeat", json={"version": __version__})
+            heartbeat_payload = {"version": __version__, "capabilities": plugin_capabilities(config)}
+            r = api("POST", "/api/agent/heartbeat", json=heartbeat_payload)
             if r.ok: fetch_config()
             else: print(f"[heartbeat] HTTP {r.status_code}", flush=True)
         except Exception as e: print(f"[heartbeat] {e}", flush=True)
