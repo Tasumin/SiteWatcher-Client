@@ -34,7 +34,7 @@ def _server_ai_detection_setting(config: Mapping[str, Any]) -> Optional[bool]:
 
     plugins = config.get("plugins")
     if isinstance(plugins, Mapping):
-        ai_detection = plugins.get("aiDetection") or plugins.get(AI_DETECTION_PLUGIN_ID)
+        ai_detection = plugins.get("aiDetection") if "aiDetection" in plugins else plugins.get(AI_DETECTION_PLUGIN_ID)
         if isinstance(ai_detection, Mapping):
             parsed = _parse_bool(ai_detection.get("enabled"))
             if parsed is not None:
