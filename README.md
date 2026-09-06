@@ -2,7 +2,7 @@
 
 Native Windows monitoring agent for **NodeVyu**.
 
-Current version: **1.1.19**
+Current version: **1.1.25**
 
 The supported Windows agent runs as a Windows service named **NodeVyuAgent** using WinSW. Docker and WSL are not required.
 
@@ -39,6 +39,7 @@ Existing agents that still use `https://monitoring.talondns.com` remain supporte
 - Remote console, reverse tunnel and agent host monitoring
 - Duplicate-worker protection
 - Timestamped subsystem log files
+- AI Detection beta plugin capability reporting and opt-in foundation
 
 ## Windows installation
 
@@ -106,6 +107,7 @@ SITEWATCH_DISCOVERY_CIDRS=192.168.1.0/24,192.168.4.0/24
 SITEWATCH_DISCOVERY_INTERVAL_SECONDS=900
 SITEWATCH_SNAPSHOT_INTERVAL_SECONDS=300
 SITEWATCH_SNMP_DISCOVERY_COMMUNITIES=public,monitoring
+SITEWATCH_BETA_AI_DETECTION=false
 ```
 
 ## Logs
@@ -133,3 +135,17 @@ The rebrand deliberately does **not** rename the internal Python package (`sitew
 - LAN access to monitored devices
 
 Python, required packages, WinSW and FFmpeg are handled by the native installer where possible.
+
+## AI Detection beta opt-in
+
+The agent advertises an optional **AI Detection** beta plugin capability. No inference runtime is started by this change.
+
+Local opt-in is controlled with:
+
+```text
+SITEWATCH_BETA_AI_DETECTION=true
+```
+
+The default is disabled. When the server includes an explicit AI Detection beta setting in agent configuration, the server/admin value overrides the local environment value so an administrator can manage the beta from NodeVyu without reinstalling the agent.
+
+Supported server configuration shapes are `betaFeatures.aiDetection.enabled` and `plugins.aiDetection.enabled` / `plugins["ai-detection"].enabled`.
