@@ -2,7 +2,7 @@
 
 Native Windows and Linux monitoring agent for **NodeVyu**.
 
-Current version: **1.2.7**
+Current version: **1.2.8**
 
 The Windows agent runs as a Windows service named **NodeVyuAgent** using WinSW. The Linux agent runs as a native **systemd** service named **nodevyu-agent**. Docker and WSL are not required.
 
@@ -277,3 +277,28 @@ Safety limits:
 - maximum file size: 20 MB
 - maximum decoded image size: 50 megapixels
 - non-image and invalid files are rejected
+
+
+### Live RTSP AI test
+
+The localhost Agent Admin UI can run a temporary live AI session against a standalone RTSP camera.
+
+The live test keeps one FFmpeg RTSP connection open, samples frames at a controlled AI rate, runs the general and wildlife ONNX models, annotates the current frame, and displays the result in the browser.
+
+Available test rates:
+
+```text
+0.5 AI FPS
+1 AI FPS
+2 AI FPS
+```
+
+The UI reports target/effective AI FPS, processed frame count, general/wildlife inference latency, total inference latency, current detections, and an annotated live frame.
+
+Live AI is intentionally temporary:
+- only one live AI test can run per agent
+- normal scheduled RTSP probing/snapshots for that camera are paused through the existing viewing-window mechanism
+- clicking Stop terminates the FFmpeg process
+- closing the local UI attempts to stop the session immediately
+- an idle session automatically stops if the UI stops polling it
+- no live AI detections are uploaded as NodeVyu events yet
