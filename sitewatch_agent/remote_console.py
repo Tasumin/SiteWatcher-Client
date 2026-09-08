@@ -46,7 +46,8 @@ def _allowed(command:str):
     text=command.strip(); lower=text.lower()
     if not text:return False,"Command is empty."
     if any(t in text for t in BLOCKED_TOKENS):return False,"Command chaining, pipelines, redirection, and subexpressions are disabled in Remote Console diagnostic mode."
-    if "\n" in text or "\r" in text:return False,"Only one diagnostic command may be run at a time."
+    if "
+" in text or "\r" in text:return False,"Only one diagnostic command may be run at a time."
     if not any(lower==p.strip() or lower.startswith(p) for p in ALLOWED_PREFIXES):return False,"Command is not in the SiteWatcher diagnostic allowlist."
     return True,""
 
@@ -67,7 +68,8 @@ def _execute(command, shell, timeout_seconds):
         stdout=e.stdout.decode(errors="replace") if isinstance(e.stdout,bytes) else str(e.stdout or "")
         stderr=e.stderr.decode(errors="replace") if isinstance(e.stderr,bytes) else str(e.stderr or "")
         timeout_message=f"Command timed out after {timeout_seconds} seconds."
-        return {"stdout":stdout[:OUTPUT_LIMIT],"stderr":((stderr+"\n" if stderr else "")+timeout_message)[:OUTPUT_LIMIT],"exitCode":None,"timedOut":True}
+        return {"stdout":stdout[:OUTPUT_LIMIT],"stderr":((stderr+"
+" if stderr else "")+timeout_message)[:OUTPUT_LIMIT],"exitCode":None,"timedOut":True}
     except Exception as e:return {"stdout":"","stderr":str(e),"exitCode":1}
 
 
@@ -111,7 +113,9 @@ def _scan_host(ip, ports):
         except OSError:pass
     alive=bool(found)
     if not alive:
-        try:\n            ping_cmd=["ping.exe","-n","1","-w","350",ip] if os.name=="nt" else ["ping","-c","1","-W","1",ip]\n            alive=subprocess.run(ping_cmd,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=2,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0)).returncode==0
+        try:
+            ping_cmd=["ping.exe","-n","1","-w","350",ip] if os.name=="nt" else ["ping","-c","1","-W","1",ip]
+            alive=subprocess.run(ping_cmd,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=2,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0)).returncode==0
         except Exception:pass
     if not alive:return None
     try:hostname=socket.gethostbyaddr(ip)[0]
