@@ -13,14 +13,7 @@ import re
 
 from PIL import Image, ImageDraw, ImageFont
 
-from .ai_detector import (
-    DEFAULT_DETECTION_CLASSES,
-    WILDLIFE_SOURCE_LABELS,
-    Detection,
-    OnnxObjectDetector,
-    canonical_wildlife_label,
-)
-from .ai_model_manager import ensure_wildlife_model, wildlife_labels_path, wildlife_model_path
+from .ai_detector import DEFAULT_DETECTION_CLASSES, Detection, OnnxObjectDetector
 from .viewing_window import enter_viewing_window, leave_viewing_window
 
 IS_WINDOWS = os.name == "nt"
@@ -165,9 +158,10 @@ class LiveAISession:
                 "framesProcessed": self.frames_processed,
                 "lastFrameAt": self.last_frame_at,
                 "generalProvider": self.general_provider,
-                "wildlifeProvider": self.wildlife_provider,
+                "wildlifeEnabled": False,
+                "wildlifeProvider": None,
                 "generalInferenceMs": self.general_inference_ms,
-                "wildlifeInferenceMs": self.wildlife_inference_ms,
+                "wildlifeInferenceMs": 0.0,
                 "totalInferenceMs": self.total_inference_ms,
                 "detections": list(self.latest_detections),
                 "hasFrame": self.latest_jpeg is not None,
@@ -199,14 +193,10 @@ class LiveAISession:
             general = OnnxObjectDetector()
             self.general_provider = general.provider
 
-            wildlife = None
-            wildlife_status = ensure_wildlife_model()
-            if wildlife_status.get("present") and wildlife_status.get("verified") is not False:
-                wildlife = OnnxObjectDetector(
-                    model_path=wildlife_model_path(),
-                    labels_path=wildlife_labels_path(),
-                )
-                self.wildlife_provider = wildlife.provider
+            # Live RTSP testing intentionally uses the fast general detector only.
+            # Wildlife remains available in still-image and one-frame tests, where
+            # its much higher CPU latency does not throttle the live pipeline.
+            self.wildlife_provider = None
 
             command = [
                 _tool("ffmpeg"),
@@ -268,7 +258,7 @@ class LiveAISession:
                     del buffer[:end + 2]
                     if len(frame_data) > MAX_FRAME_BYTES:
                         continue
-                    self._process_frame(frame_data, general, wildlife)
+                    self._process_frame(frame_data, general)
         except Exception as exc:
             with self.lock:
                 self.error = f"{type(exc).__name__}: {_safe_error(exc)}"
@@ -292,50 +282,26 @@ class LiveAISession:
         self,
         frame_data: bytes,
         general: OnnxObjectDetector,
-        wildlife: OnnxObjectDetector | None,
     ) -> None:
         with Image.open(io.BytesIO(frame_data)) as source:
             source.load()
             image = source.convert("RGB")
 
-        general_detections, general_metrics = general.detect(
+        detections, general_metrics = general.detect(
             image,
             confidence_threshold=0.55,
             iou_threshold=0.45,
             class_filter=DEFAULT_DETECTION_CLASSES,
         )
 
-        wildlife_detections: list[Detection] = []
-        wildlife_metrics = {"inferenceMs": 0.0}
-        if wildlife is not None:
-            raw, wildlife_metrics = wildlife.detect(
-                image,
-                confidence_threshold=0.45,
-                iou_threshold=0.45,
-                class_filter=WILDLIFE_SOURCE_LABELS,
-            )
-            wildlife_detections = [
-                Detection(
-                    class_id=item.class_id,
-                    label=canonical_wildlife_label(item.label),
-                    confidence=item.confidence,
-                    x=item.x,
-                    y=item.y,
-                    width=item.width,
-                    height=item.height,
-                )
-                for item in raw
-            ]
-
-        detections = _merge(general_detections, wildlife_detections)
         annotated = _annotate(image, detections)
         now = time.time()
         with self.lock:
             self.latest_jpeg = annotated
             self.latest_detections = [item.as_dict() for item in detections]
             self.general_inference_ms = float(general_metrics.get("inferenceMs") or 0)
-            self.wildlife_inference_ms = float(wildlife_metrics.get("inferenceMs") or 0)
-            self.total_inference_ms = self.general_inference_ms + self.wildlife_inference_ms
+            self.wildlife_inference_ms = 0.0
+            self.total_inference_ms = self.general_inference_ms
             self.last_frame_at = now
             self.frames_processed += 1
 
