@@ -62,7 +62,9 @@ def _execute(command, shell, timeout_seconds):
     else:
         argv = ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command]
     try:
-        c=subprocess.run(argv,capture_output=True,text=True,errors="replace",timeout=timeout_seconds,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
+        run_kwargs={"capture_output":True,"text":True,"errors":"replace","timeout":timeout_seconds}
+        if os.name=="nt":run_kwargs["creationflags"]=getattr(subprocess,"CREATE_NO_WINDOW",0)
+        c=subprocess.run(argv,**run_kwargs)
         return {"stdout":(c.stdout or "")[:OUTPUT_LIMIT],"stderr":(c.stderr or "")[:OUTPUT_LIMIT],"exitCode":c.returncode}
     except subprocess.TimeoutExpired as e:
         stdout=e.stdout.decode(errors="replace") if isinstance(e.stdout,bytes) else str(e.stdout or "")
@@ -117,7 +119,9 @@ def _scan_host(ip, ports):
     if not alive:
         try:
             ping_cmd=["ping.exe","-n","1","-w","350",ip] if os.name=="nt" else ["ping","-c","1","-W","1",ip]
-            alive=subprocess.run(ping_cmd,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=2,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0)).returncode==0
+            ping_kwargs={"stdout":subprocess.DEVNULL,"stderr":subprocess.DEVNULL,"timeout":2}
+            if os.name=="nt":ping_kwargs["creationflags"]=getattr(subprocess,"CREATE_NO_WINDOW",0)
+            alive=subprocess.run(ping_cmd,**ping_kwargs).returncode==0
         except Exception:pass
     if not alive:return None
     try:hostname=socket.gethostbyaddr(ip)[0]
