@@ -64,7 +64,7 @@ label{display:block;font-size:12px;color:var(--muted);font-weight:700}input,sele
 
 <section class="card"><h2>Connectivity</h2><div id="connectivity" class="grid"></div><div class="actions" style="margin-top:12px"><button class="secondary" onclick="loadConnectivity()">Run Connectivity Test</button></div></section>
 
-<section class="card"><h2>AI Detection <span class="pill warn">Beta</span></h2><div id="aiStatus" class="grid"></div><div class="actions" style="margin-top:12px"><select id="aiCamera" style="max-width:360px"></select><button class="secondary" onclick="runAiTest()">Run Detection Test</button></div><div id="aiTest"></div><p class="muted" style="margin-top:10px">AI testing is local to this agent. A test captures one inference frame plus a short evidence clip and does not create a NodeVyu event.</p></section>
+<section class="card"><h2>AI Detection <span class="pill warn">Beta</span></h2><div id="aiStatus" class="grid"></div><div class="actions" style="margin-top:12px"><select id="aiCamera" style="max-width:360px"></select><button class="secondary" onclick="runAiTest()">Run Detection Test</button></div><div id="aiTest"></div><p class="muted" style="margin-top:10px">AI testing is local to this agent. General + wildlife models run on one frame; matching detections can produce a short evidence clip. Wildlife currently includes deer, rabbit, bear, fox, and coyote. Goat needs a compatible goat-trained model. Deer is reported as deer; buck/doe is not guessed without antler/sex evidence.</p></section>
 
 <section class="card"><h2>Remote Access</h2><div id="remoteAccess"></div></section>
 
@@ -79,7 +79,7 @@ async function j(path,opts={}){const r=await fetch(path,{cache:"no-store",header
 function metric(label,value,klass=""){return '<div class="metric"><span>'+esc(label)+'</span><b class="'+klass+'">'+esc(value)+'</b></div>'}
 async function loadStatus(){try{const s=await j("/api/status");$("platform").textContent=s.platform.system+" "+s.platform.release;$("status").innerHTML=metric("Installed version",s.version)+metric("Latest version",s.latestVersion||"Unknown",s.updateAvailable?"warn":"good")+metric("Update status",s.updateAvailable?"Update available":"Current",s.updateAvailable?"warn":"good")+metric("Hostname",s.hostname)+metric("Agent service",s.service.status,s.service.running?"good":"bad")+metric("PID",s.pid)+metric("Process uptime",s.uptime)+metric("Server",s.serverUrl)+metric("Local UI",s.localAdminUrl)}catch(e){$("status").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function loadConnectivity(){try{$("connectivity").innerHTML=metric("Status","Testing…");const c=await j("/api/connectivity");$("connectivity").innerHTML=metric("DNS",c.dns.ok?c.dns.addresses.join(", "):c.dns.error,c.dns.ok?"good":"bad")+metric("TCP "+c.tcp.port,c.tcp.ok?"Connected":c.tcp.error,c.tcp.ok?"good":"bad")+metric("NodeVyu API",c.api.ok?"Authenticated":c.api.error,c.api.ok?"good":"bad")}catch(e){$("connectivity").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
-async function loadAi(){try{const p=await j("/api/ai"),cams=await j("/api/ai-cameras");const r=p.runtime||{},m=p.model||{};$("aiStatus").innerHTML=metric("Beta opt-in",p.enabled?"Enabled":"Disabled",p.enabled?"good":"warn")+metric("ONNX Runtime",r.installed?("v"+(r.version||"unknown")):"Not installed",r.ready?"good":"warn")+metric("Provider",r.preferredProvider||"None",r.ready?"good":"warn")+metric("Available providers",(r.providers||[]).join(", ")||"None")+metric("Detection model",m.present?"Ready":"Not installed",m.present?"good":"warn")+metric("Model path",m.path||"Not configured");$("aiCamera").innerHTML=(cams.cameras||[]).map(x=>'<option value="'+esc(x.id)+'">'+esc(x.name)+'</option>').join("")||'<option value="">No standalone RTSP cameras assigned</option>'}catch(e){$("aiStatus").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
+async function loadAi(){try{const p=await j("/api/ai"),cams=await j("/api/ai-cameras");const r=p.runtime||{},m=p.model||{},w=p.wildlifeModel||{};$("aiStatus").innerHTML=metric("Beta opt-in",p.enabled?"Enabled":"Disabled",p.enabled?"good":"warn")+metric("ONNX Runtime",r.installed?("v"+(r.version||"unknown")):"Not installed",r.ready?"good":"warn")+metric("Provider",r.preferredProvider||"None",r.ready?"good":"warn")+metric("Available providers",(r.providers||[]).join(", ")||"None")+metric("General model",m.present?"Ready":"Not installed",m.present?"good":"warn")+metric("Wildlife model",w.present?"Ready":"Not installed",w.present?"good":"warn")+metric("Wildlife version",w.version||"Pending");$("aiCamera").innerHTML=(cams.cameras||[]).map(x=>'<option value="'+esc(x.id)+'">'+esc(x.name)+'</option>').join("")||'<option value="">No standalone RTSP cameras assigned</option>'}catch(e){$("aiStatus").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function runAiTest(){const cameraId=$("aiCamera").value;if(!cameraId)return;try{$("aiTest").innerHTML='<div class="notice">Capturing frame, running inference, and recording evidence clip…</div>';const r=await j("/api/ai-test",{method:"POST",body:JSON.stringify({cameraId})});let h='<div class="notice"><b>'+esc(r.cameraName)+'</b> • '+esc(r.provider)+' • '+Number(r.metrics.totalMs||0).toFixed(1)+' ms total • '+Number(r.metrics.inferenceMs||0).toFixed(1)+' ms inference';if((r.detections||[]).length){h+='<div style="margin-top:8">'+r.detections.map(d=>esc(d.label)+' '+(Number(d.confidence||0)*100).toFixed(1)+'%').join('<br>')+'</div>'}else h+='<div style="margin-top:8">No matching detections.</div>';if(r.previewUrl)h+='<div style="margin-top:12px"><b>Detection preview</b><br><img src="'+esc(r.previewUrl)+'" style="margin-top:8px;max-width:100%;border-radius:10px;border:1px solid var(--line)"></div>';if(r.clipUrl)h+='<div style="margin-top:12px"><b>Evidence clip</b><br><video controls preload="metadata" src="'+esc(r.clipUrl)+'" style="margin-top:8px;max-width:100%;width:720px;border-radius:10px;border:1px solid var(--line)"></video></div>';h+='</div>';$("aiTest").innerHTML=h}catch(e){$("aiTest").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function loadRemote(){try{const r=await j("/api/remote-access");let h='<div class="grid">';if(r.platform==="linux"){h+=metric("OpenSSH",r.status.installed?"Installed":"Not installed",r.status.installed?"good":"warn")+metric("ssh.service",r.status.serviceStatus,r.status.ready?"good":"warn")+metric("Port 22",r.status.listening?"Listening":"Not listening",r.status.listening?"good":"warn");h+='</div><div class="actions" style="margin-top:12px"><button onclick="action(\'ssh_install\')">Install & Enable SSH</button><button class="secondary" onclick="action(\'ssh_repair\')">Repair SSH</button><button class="secondary" onclick="action(\'ssh_restart\')">Restart SSH</button>'}else{h+=metric("TightVNC",r.status.installed?"Installed":"Not installed",r.status.installed?"good":"warn")+metric("Service",r.status.serviceStatus||"Unknown",r.status.ready?"good":"warn")+metric("Port 5900",r.status.listening?"Listening":"Not listening",r.status.listening?"good":"warn");h+='</div><div class="actions" style="margin-top:12px"><button onclick="action(\'vnc_install\')">Install TightVNC</button><button class="secondary" onclick="action(\'vnc_restart\')">Restart TightVNC</button><button class="danger" onclick="action(\'vnc_uninstall\')">Uninstall TightVNC</button>'}h+='<button class="secondary" onclick="loadRemote()">Refresh Status</button></div>';$("remoteAccess").innerHTML=h}catch(e){$("remoteAccess").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function action(name){if(name==="vnc_uninstall"&&!confirm("Uninstall TightVNC?"))return;try{$("actionMessage").innerHTML='<div class="notice">Working…</div>';const r=await j("/api/action",{method:"POST",body:JSON.stringify({action:name})});$("actionMessage").innerHTML='<div class="notice">'+esc(r.message||"Action completed.")+'</div>';setTimeout(()=>{loadStatus();loadRemote()},1200)}catch(e){$("actionMessage").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
@@ -313,10 +313,48 @@ def _save_ai_evidence(preview_jpeg: bytes, clip_mp4: bytes | None) -> tuple[str,
     return preview_name, clip_name
 
 
+def _detection_iou(a, b) -> float:
+    ax1, ay1 = a.x, a.y
+    ax2, ay2 = a.x + a.width, a.y + a.height
+    bx1, by1 = b.x, b.y
+    bx2, by2 = b.x + b.width, b.y + b.height
+    x1, y1 = max(ax1, bx1), max(ay1, by1)
+    x2, y2 = min(ax2, bx2), min(ay2, by2)
+    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    union = a.width * a.height + b.width * b.height - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _merge_ai_detections(general, wildlife):
+    merged = list(general)
+    for candidate in wildlife:
+        duplicate_index = next(
+            (
+                index
+                for index, existing in enumerate(merged)
+                if existing.label == candidate.label and _detection_iou(existing, candidate) >= 0.45
+            ),
+            None,
+        )
+        if duplicate_index is None:
+            merged.append(candidate)
+        elif candidate.confidence > merged[duplicate_index].confidence:
+            merged[duplicate_index] = candidate
+    merged.sort(key=lambda item: item.confidence, reverse=True)
+    return merged
+
+
 def _run_ai_test(camera_id: str) -> dict:
     import io
     from PIL import Image
-    from .ai_detector import DEFAULT_DETECTION_CLASSES, OnnxObjectDetector
+    from .ai_detector import (
+        DEFAULT_DETECTION_CLASSES,
+        WILDLIFE_SOURCE_LABELS,
+        Detection,
+        OnnxObjectDetector,
+        canonical_wildlife_label,
+    )
+    from .ai_model_manager import ensure_wildlife_model, wildlife_labels_path, wildlife_model_path
     from .beta_features import resolve_ai_detection_beta
     from .checks import capture_snapshot, capture_clip
 
@@ -339,12 +377,51 @@ def _run_ai_test(camera_id: str) -> dict:
         image = source.convert("RGB")
 
     detector = OnnxObjectDetector()
-    detections, metrics = detector.detect(
+    general_detections, general_metrics = detector.detect(
         image,
         confidence_threshold=0.55,
         iou_threshold=0.45,
         class_filter=DEFAULT_DETECTION_CLASSES,
     )
+
+    wildlife_status = ensure_wildlife_model()
+    wildlife_detections = []
+    wildlife_metrics = {"preprocessMs": 0.0, "inferenceMs": 0.0, "postprocessMs": 0.0, "totalMs": 0.0}
+    wildlife_provider = None
+    if wildlife_status.get("present") and wildlife_status.get("verified") is not False:
+        wildlife_detector = OnnxObjectDetector(
+            model_path=wildlife_model_path(),
+            labels_path=wildlife_labels_path(),
+        )
+        raw_wildlife, wildlife_metrics = wildlife_detector.detect(
+            image,
+            confidence_threshold=0.45,
+            iou_threshold=0.45,
+            class_filter=WILDLIFE_SOURCE_LABELS,
+        )
+        wildlife_provider = wildlife_detector.provider
+        wildlife_detections = [
+            Detection(
+                class_id=item.class_id,
+                label=canonical_wildlife_label(item.label),
+                confidence=item.confidence,
+                x=item.x,
+                y=item.y,
+                width=item.width,
+                height=item.height,
+            )
+            for item in raw_wildlife
+        ]
+
+    detections = _merge_ai_detections(general_detections, wildlife_detections)
+    metrics = {
+        "preprocessMs": general_metrics["preprocessMs"] + wildlife_metrics["preprocessMs"],
+        "inferenceMs": general_metrics["inferenceMs"] + wildlife_metrics["inferenceMs"],
+        "postprocessMs": general_metrics["postprocessMs"] + wildlife_metrics["postprocessMs"],
+        "totalMs": general_metrics["totalMs"] + wildlife_metrics["totalMs"],
+        "generalInferenceMs": general_metrics["inferenceMs"],
+        "wildlifeInferenceMs": wildlife_metrics["inferenceMs"],
+    }
 
     preview_jpeg = _annotated_preview(image, detections)
     clip_data = None
@@ -362,6 +439,7 @@ def _run_ai_test(camera_id: str) -> dict:
         "cameraId": str(device.get("id")),
         "cameraName": str(device.get("name") or device.get("id")),
         "provider": detector.provider,
+        "wildlifeProvider": wildlife_provider,
         "sourceWidth": image.width,
         "sourceHeight": image.height,
         "metrics": metrics,
