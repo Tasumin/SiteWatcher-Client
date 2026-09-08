@@ -46,8 +46,7 @@ def _allowed(command:str):
     text=command.strip(); lower=text.lower()
     if not text:return False,"Command is empty."
     if any(t in text for t in BLOCKED_TOKENS):return False,"Command chaining, pipelines, redirection, and subexpressions are disabled in Remote Console diagnostic mode."
-    if "
-" in text or "\r" in text:return False,"Only one diagnostic command may be run at a time."
+    if "\n" in text or "\r" in text:return False,"Only one diagnostic command may be run at a time."
     if not any(lower==p.strip() or lower.startswith(p) for p in ALLOWED_PREFIXES):return False,"Command is not in the SiteWatcher diagnostic allowlist."
     return True,""
 
@@ -70,8 +69,7 @@ def _execute(command, shell, timeout_seconds):
         stdout=e.stdout.decode(errors="replace") if isinstance(e.stdout,bytes) else str(e.stdout or "")
         stderr=e.stderr.decode(errors="replace") if isinstance(e.stderr,bytes) else str(e.stderr or "")
         timeout_message=f"Command timed out after {timeout_seconds} seconds."
-        return {"stdout":stdout[:OUTPUT_LIMIT],"stderr":((stderr+"
-" if stderr else "")+timeout_message)[:OUTPUT_LIMIT],"exitCode":None,"timedOut":True}
+        return {"stdout":stdout[:OUTPUT_LIMIT],"stderr":((stderr+"\n" if stderr else "")+timeout_message)[:OUTPUT_LIMIT],"exitCode":None,"timedOut":True}
     except Exception as e:return {"stdout":"","stderr":str(e),"exitCode":1}
 
 
