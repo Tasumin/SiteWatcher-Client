@@ -169,11 +169,22 @@ try {
     } else {
         Copy-Item -LiteralPath $EnvBackup -Destination $ExistingEnvFile -Force
     }
+    $localAdminDefaults=@{
+        'SITEWATCH_LOCAL_ADMIN_ENABLED'='true'
+        'SITEWATCH_LOCAL_ADMIN_PORT'='8765'
+        'SITEWATCH_LOCAL_ADMIN_LAN_ACCESS'='false'
+    }
+    $currentEnvText=if(Test-Path $ExistingEnvFile){Get-Content -LiteralPath $ExistingEnvFile -Raw}else{''}
+    foreach($entry in $localAdminDefaults.GetEnumerator()){
+        if($currentEnvText -notmatch ('(?m)^'+[regex]::Escape($entry.Key)+'=')){
+            Add-Content -LiteralPath $ExistingEnvFile -Value ($entry.Key+'='+$entry.Value) -Encoding ASCII
+        }
+    }
 
     $runtime=Ensure-ServiceRuntime;$Wrapper=$runtime.Wrapper;$existingService=Get-Service $ServiceName -ErrorAction SilentlyContinue;if($existingService){& $Wrapper uninstall 2>$null|Out-Null;Start-Sleep 1}; & $Wrapper install;if($LASTEXITCODE -ne 0){throw "WinSW could not install the $ServiceName service."}; & $Wrapper start;Start-Sleep 3
     $installedService=Get-Service $ServiceName -ErrorAction SilentlyContinue;if(-not $installedService){throw "NodeVyuAgent service was not created."};if($installedService.Status -ne 'Running'){Start-Service $ServiceName -ErrorAction Stop;Start-Sleep 2;$installedService=Get-Service $ServiceName}
     $version='unknown';$versionFile=Join-Path $InstallPath 'sitewatch_agent\__init__.py';if(Test-Path $versionFile){$match=Select-String $versionFile -Pattern '__version__\s*=\s*["'']([^"'']+)'|Select-Object -First 1;if($match){$version=$match.Matches[0].Groups[1].Value}}
-    Write-Host "`nService: $ServiceDisplayName ($ServiceName)" -ForegroundColor Green;Write-Host "Status: $($installedService.Status)";Write-Host "Agent version: $version";Write-Host "Install path: $InstallPath";Write-Host "Existing configuration preserved: $IsUpgrade";Write-Host "NodeVyu native Windows service installed/upgraded successfully." -ForegroundColor Green
+    Write-Host "`nService: $ServiceDisplayName ($ServiceName)" -ForegroundColor Green;Write-Host "Status: $($installedService.Status)";Write-Host "Agent version: $version";Write-Host "Install path: $InstallPath";Write-Host "Local admin: http://127.0.0.1:8765";Write-Host "Existing configuration preserved: $IsUpgrade";Write-Host "NodeVyu native Windows service installed/upgraded successfully." -ForegroundColor Green
     if($IsLegacyMigration){Write-Host "Legacy SiteWatcher service removed. The old $LegacyInstallPath folder was left in place for rollback/log history." -ForegroundColor DarkGray}
 }
 catch {

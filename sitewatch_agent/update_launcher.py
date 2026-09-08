@@ -90,7 +90,7 @@ def _read_update_log() -> str:
         return ""
 
 
-def launch_self_update() -> None:
+def _launch_self_update_windows() -> None:
     """Launch the updater outside the WinSW service process tree via WMI/CIM."""
     # Keep the legacy download route during the rebrand so older servers and
     # existing agents can transition without a coordinated cutover.
@@ -140,3 +140,50 @@ Write-Output ('created pid=' + $result.ProcessId)
 
     _append(f"ERROR detached updater did not execute within verification window: id={update_id}; {detail}")
     raise RuntimeError(f"Detached updater process was created but did not execute within verification window. {detail}".strip())
+
+
+def _launch_self_update_linux() -> None:
+    if os.geteuid() != 0:
+        raise RuntimeError("Linux self-update requires the systemd service to run as root.")
+    update_id = uuid.uuid4().hex[:10]
+    update_log = _update_log_path()
+    update_root = "/var/lib/nodevyu/updates"
+    os.makedirs(update_root, exist_ok=True)
+    script_path = os.path.join(update_root, f"nodevyu-update-{update_id}.sh")
+    installer_url = SERVER + "/downloads/nodevyu-agent?platform=linux"
+    install_root = _install_root()
+    script = f"""#!/usr/bin/env bash
+set -u
+LOG={update_log!r}
+exec >>"$LOG" 2>&1
+echo "[$(date -Is)] detached updater process started id={update_id}"
+sleep 2
+TMP="$(mktemp /tmp/install-nodevyu-linux.XXXXXX.sh)"
+trap 'rm -f "$TMP" "{script_path}"' EXIT
+curl -fsSL {installer_url!r} -o "$TMP"
+bash "$TMP" --install-path {install_root!r} --server-url {SERVER!r}
+echo "[$(date -Is)] detached updater finished"
+"""
+    with open(script_path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(script)
+    os.chmod(script_path, 0o700)
+    _append(f"remote NodeVyu Linux update requested; id={update_id}; installer={installer_url}")
+    unit_name = f"nodevyu-agent-update-{update_id}"
+    launched = subprocess.run(
+        ["systemd-run", "--quiet", "--collect", f"--unit={unit_name}", "/bin/bash", script_path],
+        capture_output=True,
+        text=True,
+        errors="replace",
+        timeout=10,
+    )
+    if launched.returncode != 0:
+        detail = (launched.stderr or launched.stdout or "systemd-run failed").strip()
+        _append(f"ERROR creating Linux updater transient unit: {detail}")
+        raise RuntimeError(detail)
+    _append(f"Linux updater transient unit started: {unit_name}")
+
+
+def launch_self_update() -> None:
+    if os.name == "nt":
+        return _launch_self_update_windows()
+    return _launch_self_update_linux()

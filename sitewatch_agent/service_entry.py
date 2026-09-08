@@ -47,27 +47,33 @@ def acquire_service_entry_mutex() -> bool:
 
 
 def acquire_service_entry_file_lock(root: Path) -> bool:
-    """Second singleton guard using a byte-range lock held for process lifetime."""
+    """Second singleton guard held for the process lifetime on Windows and POSIX."""
     global _SERVICE_ENTRY_LOCK
-    if os.name != "nt":
-        return True
-
-    import msvcrt
-
     data_dir = root / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     lock_path = data_dir / "service-entry.lock"
     handle = open(lock_path, "a+b")
-    handle.seek(0, os.SEEK_END)
-    if handle.tell() == 0:
-        handle.write(b"\0")
-        handle.flush()
-    handle.seek(0)
-    try:
-        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-    except OSError:
-        handle.close()
-        return False
+
+    if os.name == "nt":
+        import msvcrt
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            handle.close()
+            return False
+    else:
+        import fcntl
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError):
+            handle.close()
+            return False
+
     _SERVICE_ENTRY_LOCK = handle
     return True
 
@@ -110,7 +116,8 @@ def load_env(root: Path) -> None:
     os.environ.setdefault("SITEWATCH_LOCK_FILE", str(data_dir / "sitewatch-agent.lock"))
 
     ffmpeg_dir = root / "bin"
-    if (ffmpeg_dir / "ffmpeg.exe").exists():
+    ffmpeg_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+    if (ffmpeg_dir / ffmpeg_name).exists():
         os.environ.setdefault("SITEWATCH_FFMPEG_DIR", str(ffmpeg_dir))
 
 
@@ -148,6 +155,7 @@ def main() -> None:
     from .host_monitor import host_monitor_loop
     from .live_stream import live_stream_loop
     from .update_launcher import launch_self_update
+    from .local_admin import local_admin_loop, local_admin_enabled
 
     print(f"[startup] logging split enabled path={log_dir}", flush=True)
     print(f"[startup] server={os.environ.get('SITEWATCH_SERVER_URL')}", flush=True)
@@ -159,6 +167,11 @@ def main() -> None:
     console_thread = threading.Thread(target=remote_console.remote_console_loop, name="nodevyu-remote-console", daemon=True)
     console_thread.start()
     print("[startup] NodeVyu worker remote-console started", flush=True)
+
+    if local_admin_enabled():
+        local_admin_thread = threading.Thread(target=local_admin_loop, name="nodevyu-local-admin", daemon=True)
+        local_admin_thread.start()
+        print("[startup] NodeVyu local admin scheduled", flush=True)
 
     host_thread = threading.Thread(target=host_monitor_loop, name="nodevyu-host-monitor", daemon=True)
     host_thread.start()

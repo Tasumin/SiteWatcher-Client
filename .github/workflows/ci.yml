@@ -16,4 +16,5 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt pytest
       - run: python -m compileall sitewatch_agent tests
+      - run: bash -n install-nodevyu-linux.sh run-nodevyu-linux.sh uninstall-nodevyu-linux.sh
       - run: pytest -q

@@ -1,3 +1,4 @@
+import platform
 import os, time, threading, requests, base64, socket, uuid, sys, concurrent.futures
 from datetime import datetime, timezone
 from . import __version__
@@ -79,7 +80,14 @@ def fetch_config():
 def heartbeat():
     while True:
         try:
-            heartbeat_payload = {"version": __version__, "capabilities": plugin_capabilities(config)}
+            capabilities = plugin_capabilities(config)
+            capabilities["platform"] = {
+                "os": "windows" if os.name == "nt" else "linux",
+                "system": platform.system(),
+                "release": platform.release(),
+                "machine": platform.machine(),
+            }
+            heartbeat_payload = {"version": __version__, "capabilities": capabilities}
             r = api("POST", "/api/agent/heartbeat", json=heartbeat_payload)
             if r.ok: fetch_config()
             else: print(f"[heartbeat] HTTP {r.status_code}", flush=True)
