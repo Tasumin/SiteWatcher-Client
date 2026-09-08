@@ -17,6 +17,11 @@ from .ai_model_manager import configured_model_path, get_model_family, get_model
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LABELS_PATH = ROOT / "models" / "ai-detection" / "labels.json"
 
+DEFAULT_DETECTION_CLASSES = (
+    "person", "car", "truck", "bus", "motorcycle", "bicycle",
+    "bird", "cat", "dog", "horse", "sheep", "cow", "bear", "zebra", "giraffe", "elephant",
+)
+
 
 @dataclass(frozen=True)
 class Detection:
