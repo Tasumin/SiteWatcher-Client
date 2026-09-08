@@ -10,7 +10,7 @@ from .snmp import run_snmp_walk
 from .remote_tunnel import remote_tunnel_loop
 from .nvr_streams import nvr_stream_loop
 from .beta_features import plugin_capabilities, resolve_ai_detection_beta
-from .ai_model_manager import ensure_managed_model
+from .ai_model_manager import ensure_managed_model, ensure_wildlife_model
 
 SERVER = os.environ["SITEWATCH_SERVER_URL"].rstrip("/")
 TOKEN = os.environ["SITEWATCH_AGENT_TOKEN"]
@@ -89,9 +89,19 @@ def ai_model_provision_loop():
                 if last_enabled is not True:
                     print(f"[ai-model] beta enabled source={source}; checking managed model", flush=True)
                 status = ensure_managed_model()
-                ready = bool(status.get("present") and status.get("managed") and status.get("verified") is not False)
+                wildlife_status = ensure_wildlife_model()
+                ready = bool(
+                    status.get("present")
+                    and status.get("managed")
+                    and status.get("verified") is not False
+                    and wildlife_status.get("present")
+                    and wildlife_status.get("verified") is not False
+                )
                 if ready and last_ready is not True:
-                    print(f"[ai-model] model ready id={status.get('id')} version={status.get('version')}", flush=True)
+                    print(
+                        f"[ai-model] models ready general={status.get('version')} wildlife={wildlife_status.get('version')}",
+                        flush=True,
+                    )
                 last_ready = ready
             else:
                 last_ready = None
