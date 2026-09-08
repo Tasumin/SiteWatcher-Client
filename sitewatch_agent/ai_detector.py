@@ -12,9 +12,9 @@ import numpy as np
 from PIL import Image
 
 from .ai_runtime import get_ai_runtime_status
+from .ai_model_manager import configured_model_path, get_model_family, get_model_provision_status
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MODEL_PATH = ROOT / "models" / "ai-detection" / "model.onnx"
 DEFAULT_LABELS_PATH = ROOT / "models" / "ai-detection" / "labels.json"
 
 
@@ -42,11 +42,6 @@ class Detection:
         }
 
 
-def configured_model_path() -> Path:
-    value = os.getenv("SITEWATCH_AI_MODEL_PATH", "").strip()
-    return Path(value).expanduser() if value else DEFAULT_MODEL_PATH
-
-
 def configured_labels_path() -> Path:
     value = os.getenv("SITEWATCH_AI_LABELS_PATH", "").strip()
     return Path(value).expanduser() if value else DEFAULT_LABELS_PATH
@@ -70,31 +65,41 @@ def _load_labels(path: Path) -> list[str]:
 
 
 def get_ai_model_status() -> dict[str, Any]:
-    model = configured_model_path()
+    status = get_model_provision_status(verify=False)
     labels = configured_labels_path()
     return {
-        "path": str(model),
-        "present": model.is_file(),
-        "sizeBytes": model.stat().st_size if model.is_file() else 0,
+        **status,
         "labelsPath": str(labels),
         "labelsPresent": labels.is_file(),
     }
 
 
-def _letterbox(image: Image.Image, width: int, height: int) -> tuple[np.ndarray, float, int, int]:
+def _prepare_image(image: Image.Image, width: int, height: int, family: str) -> tuple[np.ndarray, float, int, int]:
     source = image.convert("RGB")
     src_w, src_h = source.size
     scale = min(width / src_w, height / src_h)
-    resized_w = max(1, int(round(src_w * scale)))
-    resized_h = max(1, int(round(src_h * scale)))
+    resized_w = max(1, int(src_w * scale))
+    resized_h = max(1, int(src_h * scale))
     resized = source.resize((resized_w, resized_h), Image.Resampling.BILINEAR)
-    canvas = Image.new("RGB", (width, height), (114, 114, 114))
+
+    if family == "yolox":
+        canvas = Image.new("RGB", (width, height), (114, 114, 114))
+        canvas.paste(resized, (0, 0))
+        array = np.asarray(canvas, dtype=np.float32)[..., ::-1]
+        tensor = np.transpose(array, (2, 0, 1))[None, ...]
+        return np.ascontiguousarray(tensor), scale, 0, 0
+
     pad_x = (width - resized_w) // 2
     pad_y = (height - resized_h) // 2
+    canvas = Image.new("RGB", (width, height), (114, 114, 114))
     canvas.paste(resized, (pad_x, pad_y))
     array = np.asarray(canvas, dtype=np.float32) / 255.0
     tensor = np.transpose(array, (2, 0, 1))[None, ...]
     return np.ascontiguousarray(tensor), scale, pad_x, pad_y
+
+
+def _letterbox(image: Image.Image, width: int, height: int) -> tuple[np.ndarray, float, int, int]:
+    return _prepare_image(image, width, height, "generic-yolo")
 
 
 def _iou_xyxy(box: np.ndarray, boxes: np.ndarray) -> np.ndarray:
@@ -134,6 +139,27 @@ def _normalize_output(output: np.ndarray) -> np.ndarray:
     if rows.shape[0] < rows.shape[1] and rows.shape[0] <= 256:
         rows = rows.T
     return rows.astype(np.float32, copy=False)
+
+
+def _decode_yolox_rows(rows: np.ndarray, input_width: int, input_height: int) -> np.ndarray:
+    strides = (8, 16, 32)
+    grids = []
+    expanded = []
+    for stride in strides:
+        hsize = input_height // stride
+        wsize = input_width // stride
+        xv, yv = np.meshgrid(np.arange(wsize), np.arange(hsize))
+        grid = np.stack((xv, yv), axis=2).reshape(-1, 2)
+        grids.append(grid)
+        expanded.append(np.full((grid.shape[0], 1), stride, dtype=np.float32))
+    grid = np.concatenate(grids, axis=0).astype(np.float32)
+    expanded_strides = np.concatenate(expanded, axis=0)
+    if rows.shape[0] != grid.shape[0]:
+        raise ValueError(f"YOLOX output candidate count mismatch: got {rows.shape[0]}, expected {grid.shape[0]}")
+    decoded = rows.copy()
+    decoded[:, :2] = (decoded[:, :2] + grid) * expanded_strides
+    decoded[:, 2:4] = np.exp(decoded[:, 2:4]) * expanded_strides
+    return decoded
 
 
 def _decode_rows(rows: np.ndarray, confidence_threshold: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -195,6 +221,7 @@ class OnnxObjectDetector:
         self.input_height = int(shape[2]) if len(shape) >= 4 and isinstance(shape[2], int) else 640
         self.input_width = int(shape[3]) if len(shape) >= 4 and isinstance(shape[3], int) else 640
         self.labels = _load_labels(self.labels_path)
+        self.family = get_model_family(self.model_path)
 
     def detect(
         self,
@@ -204,13 +231,15 @@ class OnnxObjectDetector:
         class_filter: Iterable[str] | None = None,
     ) -> tuple[list[Detection], dict[str, float]]:
         start = time.perf_counter()
-        tensor, scale, pad_x, pad_y = _letterbox(image, self.input_width, self.input_height)
+        tensor, scale, pad_x, pad_y = _prepare_image(image, self.input_width, self.input_height, self.family)
         prepared = time.perf_counter()
 
         output = self.session.run(None, {self.input.name: tensor})[0]
         inferred = time.perf_counter()
 
         rows = _normalize_output(output)
+        if self.family == "yolox":
+            rows = _decode_yolox_rows(rows, self.input_width, self.input_height)
         boxes, scores, class_ids = _decode_rows(rows, confidence_threshold)
         allowed = {str(value).strip().lower() for value in class_filter or [] if str(value).strip()}
         src_w, src_h = image.size
