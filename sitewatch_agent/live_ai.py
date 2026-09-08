@@ -9,6 +9,7 @@ import time
 import uuid
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
+import re
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -48,6 +49,11 @@ def _rtsp_with_credentials(url: str, username: str | None, password: str | None)
         host = f"[{host}]"
     netloc = f"{auth}@{host}" + (f":{parsed.port}" if parsed.port else "")
     return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
+
+
+def _safe_error(value: object) -> str:
+    text = re.sub(r"(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@", r"\1", str(value))
+    return text[-1200:]
 
 
 def _iou(a: Detection, b: Detection) -> float:
@@ -238,7 +244,7 @@ class LiveAISession:
                         stderr = b""
                         if self.process.stderr:
                             stderr = self.process.stderr.read()[-1000:]
-                        detail = stderr.decode("utf-8", errors="ignore").strip()
+                        detail = _safe_error(stderr.decode("utf-8", errors="ignore").strip())
                         raise RuntimeError(detail or f"FFmpeg exited with code {self.process.returncode}")
                     time.sleep(0.02)
                     continue
@@ -265,7 +271,7 @@ class LiveAISession:
                     self._process_frame(frame_data, general, wildlife)
         except Exception as exc:
             with self.lock:
-                self.error = f"{type(exc).__name__}: {exc}"
+                self.error = f"{type(exc).__name__}: {_safe_error(exc)}"
             print(f"[ai-live] session={self.id} error={self.error}", flush=True)
         finally:
             self.running = False
@@ -342,7 +348,9 @@ def start_live_ai(device: dict, ai_fps: float = 1.0) -> dict:
     global _session
     with _manager_lock:
         if _session is not None:
-            _session.stop()
+            previous = _session
+            previous.stop()
+            previous.thread.join(timeout=3)
         _session = LiveAISession(device, ai_fps)
         _session.start()
         return _session.status()
