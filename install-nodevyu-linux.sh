@@ -7,7 +7,7 @@ AGENT_TOKEN=""
 ENROLLMENT_KEY="__SITEWATCH_ENROLLMENT_KEY__"
 DISCOVERY_CIDRS=""
 SERVICE_NAME="nodevyu-agent"
-INSTALLER_BUILD="1.1.0-linux"
+INSTALLER_BUILD="1.1.1-linux"
 AGENT_COMMIT="__SITEWATCH_AGENT_COMMIT__"
 
 while [[ $# -gt 0 ]]; do
@@ -80,7 +80,11 @@ fi
 
 systemctl stop "$SERVICE_NAME" 2>/dev/null || true
 ARCHIVE="$TMP_ROOT/agent.tar.gz"
-[[ "$AGENT_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "Installer is missing a valid pinned agent commit. Download a fresh Linux installer from $SERVER_URL/downloads." >&2; exit 1; }
+if [[ ! "$AGENT_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  echo "Installer was not server-pinned; resolving current production agent commit..."
+  AGENT_COMMIT="$(curl -fsSL --connect-timeout 15 --max-time 30 -H 'Accept: application/vnd.github+json' -H 'User-Agent: NodeVyu' https://api.github.com/repos/Tasumin/SiteWatcher-Client/commits/main | python3 -c 'import json,sys; print((json.load(sys.stdin).get("sha") or "").strip())')"
+fi
+[[ "$AGENT_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "Unable to resolve a valid NodeVyu agent commit." >&2; exit 1; }
 curl -fsSL --connect-timeout 20 --max-time 120 "https://github.com/Tasumin/SiteWatcher-Client/archive/$AGENT_COMMIT.tar.gz" -o "$ARCHIVE"
 tar -xzf "$ARCHIVE" -C "$TMP_ROOT"
 REPO_ROOT="$TMP_ROOT/SiteWatcher-Client-$AGENT_COMMIT"
