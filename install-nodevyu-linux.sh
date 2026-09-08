@@ -7,7 +7,8 @@ AGENT_TOKEN=""
 ENROLLMENT_KEY="__SITEWATCH_ENROLLMENT_KEY__"
 DISCOVERY_CIDRS=""
 SERVICE_NAME="nodevyu-agent"
-INSTALLER_BUILD="1.0.0-linux-beta"
+INSTALLER_BUILD="1.0.1-linux-beta"
+AGENT_COMMIT="__SITEWATCH_AGENT_COMMIT__"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -79,9 +80,10 @@ fi
 
 systemctl stop "$SERVICE_NAME" 2>/dev/null || true
 ARCHIVE="$TMP_ROOT/agent.tar.gz"
-curl -fsSL --connect-timeout 20 --max-time 120 "https://github.com/Tasumin/SiteWatcher-Client/archive/refs/heads/main.tar.gz" -o "$ARCHIVE"
+[[ "$AGENT_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "Installer is missing a valid pinned agent commit. Download a fresh Linux installer from $SERVER_URL/downloads." >&2; exit 1; }
+curl -fsSL --connect-timeout 20 --max-time 120 "https://github.com/Tasumin/SiteWatcher-Client/archive/$AGENT_COMMIT.tar.gz" -o "$ARCHIVE"
 tar -xzf "$ARCHIVE" -C "$TMP_ROOT"
-REPO_ROOT="$TMP_ROOT/SiteWatcher-Client-main"
+REPO_ROOT="$TMP_ROOT/SiteWatcher-Client-$AGENT_COMMIT"
 [[ -d "$REPO_ROOT/sitewatch_agent" ]] || { echo "Downloaded package is invalid." >&2; exit 1; }
 
 mkdir -p "$INSTALL_PATH" "$INSTALL_PATH/logs" "$INSTALL_PATH/data"
