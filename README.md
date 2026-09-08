@@ -2,7 +2,7 @@
 
 Native Windows and Linux monitoring agent for **NodeVyu**.
 
-Current version: **1.2.4**
+Current version: **1.2.5**
 
 The Windows agent runs as a Windows service named **NodeVyuAgent** using WinSW. The Linux agent runs as a native **systemd** service named **nodevyu-agent**. Docker and WSL are not required.
 
@@ -229,3 +229,14 @@ data/ai-models/yolox-tiny-coco-0.1.1rc0.onnx
 A partial or checksum-invalid download is never promoted to the active model. The agent retries provisioning while the beta remains enabled.
 
 Setting `SITEWATCH_AI_MODEL_PATH` switches to a custom unmanaged model; NodeVyu will not overwrite or auto-download to that custom path.
+
+
+### AI animal detection and local evidence
+
+The default AI Detection filter now includes people, vehicles, and common COCO animal classes:
+
+```text
+bird, cat, dog, horse, sheep, cow, bear, zebra, giraffe, elephant
+```
+
+The local Agent Admin detection test creates an annotated JPEG preview with bounding boxes and confidence labels. When at least one matching object is found, it also records a short 4-second browser-compatible MP4 evidence clip from the same RTSP camera. Evidence stays local under `data/ai-evidence/`, is not uploaded as an event, and old test evidence is automatically cleaned up.
