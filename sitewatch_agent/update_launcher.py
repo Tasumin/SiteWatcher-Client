@@ -168,14 +168,19 @@ echo "[$(date -Is)] detached updater finished"
         handle.write(script)
     os.chmod(script_path, 0o700)
     _append(f"remote NodeVyu Linux update requested; id={update_id}; installer={installer_url}")
-    subprocess.Popen(
-        ["/bin/bash", script_path],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-        close_fds=True,
+    unit_name = f"nodevyu-agent-update-{update_id}"
+    launched = subprocess.run(
+        ["systemd-run", "--quiet", "--collect", f"--unit={unit_name}", "/bin/bash", script_path],
+        capture_output=True,
+        text=True,
+        errors="replace",
+        timeout=10,
     )
+    if launched.returncode != 0:
+        detail = (launched.stderr or launched.stdout or "systemd-run failed").strip()
+        _append(f"ERROR creating Linux updater transient unit: {detail}")
+        raise RuntimeError(detail)
+    _append(f"Linux updater transient unit started: {unit_name}")
 
 
 def launch_self_update() -> None:
