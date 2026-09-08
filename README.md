@@ -2,7 +2,7 @@
 
 Native Windows and Linux monitoring agent for **NodeVyu**.
 
-Current version: **1.2.6**
+Current version: **1.2.7**
 
 The Windows agent runs as a Windows service named **NodeVyuAgent** using WinSW. The Linux agent runs as a native **systemd** service named **nodevyu-agent**. Docker and WSL are not required.
 
@@ -261,3 +261,19 @@ The wildlife model also contains additional North American species, but NodeVyu 
 Goat is intentionally not inferred yet because the selected managed wildlife model does not include a goat class. NodeVyu does not relabel sheep or bighorn sheep as goat.
 
 Deer is currently reported as `deer`. Buck/doe classification is not guessed from image edges; a future antler/sex-specific model can refine deer detections when reliable evidence is available.
+
+
+### AI image file testing
+
+The localhost Agent Admin UI can test still images without using RTSP in two ways:
+
+- upload a JPG, PNG, WebP, or BMP from the browser
+- enter the path to an image file that already exists on the agent system
+
+Both modes run the same general + wildlife ONNX inference pipeline used by camera tests and return an annotated detection preview. Local image tests do not record a video clip.
+
+Safety limits:
+- supported image extensions: JPG/JPEG, PNG, WebP, BMP
+- maximum file size: 20 MB
+- maximum decoded image size: 50 megapixels
+- non-image and invalid files are rejected
