@@ -22,6 +22,24 @@ DEFAULT_DETECTION_CLASSES = (
     "bird", "cat", "dog", "horse", "sheep", "cow", "bear", "zebra", "giraffe", "elephant",
 )
 
+WILDLIFE_SOURCE_LABELS = (
+    "Mule Deer",
+    "Coyote",
+    "Grizzly Bear",
+    "Swift Fox",
+    "American Black Bear",
+    "Black-tailed Jackrabbit",
+)
+
+WILDLIFE_CANONICAL_LABELS = {
+    "mule deer": "deer",
+    "coyote": "coyote",
+    "grizzly bear": "bear",
+    "swift fox": "fox",
+    "american black bear": "bear",
+    "black-tailed jackrabbit": "rabbit",
+}
+
 
 @dataclass(frozen=True)
 class Detection:
@@ -45,6 +63,10 @@ class Detection:
                 "height": round(self.height, 6),
             },
         }
+
+
+def canonical_wildlife_label(label: str) -> str:
+    return WILDLIFE_CANONICAL_LABELS.get(str(label).strip().lower(), str(label).strip().lower())
 
 
 def configured_labels_path() -> Path:
@@ -245,14 +267,24 @@ class OnnxObjectDetector:
         rows = _normalize_output(output)
         if self.family == "yolox":
             rows = _decode_yolox_rows(rows, self.input_width, self.input_height)
-        boxes, scores, class_ids = _decode_rows(rows, confidence_threshold)
+
+        end_to_end = bool(self.family == "yolo26" and rows.shape[1] == 6)
+        if end_to_end:
+            scores = rows[:, 4].astype(np.float32)
+            class_ids = rows[:, 5].astype(np.int32)
+            valid = np.isfinite(scores) & (scores >= confidence_threshold)
+            boxes = rows[valid, :4].astype(np.float32)
+            scores = scores[valid]
+            class_ids = class_ids[valid]
+        else:
+            boxes, scores, class_ids = _decode_rows(rows, confidence_threshold)
         allowed = {str(value).strip().lower() for value in class_filter or [] if str(value).strip()}
         src_w, src_h = image.size
 
         detections: list[Detection] = []
         for class_id in np.unique(class_ids):
             indexes = np.flatnonzero(class_ids == class_id)
-            kept = _nms(boxes[indexes], scores[indexes], iou_threshold)
+            kept = list(range(len(indexes))) if end_to_end else _nms(boxes[indexes], scores[indexes], iou_threshold)
             for relative in kept:
                 index = int(indexes[relative])
                 x1, y1, x2, y2 = boxes[index]
