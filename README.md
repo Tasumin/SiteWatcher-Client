@@ -197,3 +197,20 @@ SITEWATCH_BETA_AI_DETECTION=true
 The default is disabled. The same setting is editable from the local agent admin UI under Safe Configuration. When the server includes an explicit AI Detection beta setting in agent configuration, the server/admin value overrides the local environment value so an administrator can manage the beta from NodeVyu without reinstalling the agent.
 
 Supported server configuration shapes are `betaFeatures.aiDetection.enabled` and `plugins.aiDetection.enabled` / `plugins["ai-detection"].enabled`.
+
+
+### AI single-camera benchmark
+
+After enabling the beta and placing a compatible YOLO-style ONNX model at `models/ai-detection/model.onnx`, benchmark a standalone camera assigned to this agent:
+
+```bash
+python -m sitewatch_agent.ai_test --device-id CAMERA_UUID --runs 10
+```
+
+For an offline image test:
+
+```bash
+python -m sitewatch_agent.ai_test --image test.jpg --runs 10
+```
+
+The benchmark uses the same Python detector code on Windows and Linux and reports preprocessing, inference, post-processing, total latency, estimated inference FPS, provider, and detections. No events are uploaded during this benchmark stage.
