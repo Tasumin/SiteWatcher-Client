@@ -2,7 +2,7 @@
 
 Native Windows and Linux monitoring agent for **NodeVyu**.
 
-Current version: **1.2.3**
+Current version: **1.2.4**
 
 The Windows agent runs as a Windows service named **NodeVyuAgent** using WinSW. The Linux agent runs as a native **systemd** service named **nodevyu-agent**. Docker and WSL are not required.
 
@@ -89,7 +89,7 @@ The agent includes a lightweight local troubleshooting interface with no login p
 http://127.0.0.1:8765
 ```
 
-The interface exposes agent status, NodeVyu connectivity checks, logs and log bundles, safe configuration values, agent restart/update actions, Linux OpenSSH management, and Windows TightVNC management. Agent tokens and other secrets are never displayed.
+The interface exposes agent status, the installed and latest available agent versions, update availability, NodeVyu connectivity checks, logs and log bundles, safe configuration values, agent restart/update actions, Linux OpenSSH management, and Windows TightVNC management. Agent tokens and other secrets are never displayed.
 
 Default settings:
 
