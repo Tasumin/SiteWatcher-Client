@@ -155,6 +155,7 @@ def main() -> None:
     from .host_monitor import host_monitor_loop
     from .live_stream import live_stream_loop
     from .update_launcher import launch_self_update
+    from .local_admin import local_admin_loop, local_admin_enabled
 
     print(f"[startup] logging split enabled path={log_dir}", flush=True)
     print(f"[startup] server={os.environ.get('SITEWATCH_SERVER_URL')}", flush=True)
@@ -166,6 +167,11 @@ def main() -> None:
     console_thread = threading.Thread(target=remote_console.remote_console_loop, name="nodevyu-remote-console", daemon=True)
     console_thread.start()
     print("[startup] NodeVyu worker remote-console started", flush=True)
+
+    if local_admin_enabled():
+        local_admin_thread = threading.Thread(target=local_admin_loop, name="nodevyu-local-admin", daemon=True)
+        local_admin_thread.start()
+        print("[startup] NodeVyu local admin scheduled", flush=True)
 
     host_thread = threading.Thread(target=host_monitor_loop, name="nodevyu-host-monitor", daemon=True)
     host_thread.start()
