@@ -7,7 +7,7 @@ AGENT_TOKEN=""
 ENROLLMENT_KEY="__SITEWATCH_ENROLLMENT_KEY__"
 DISCOVERY_CIDRS=""
 SERVICE_NAME="nodevyu-agent"
-INSTALLER_BUILD="1.0.1-linux-beta"
+INSTALLER_BUILD="1.1.0-linux"
 AGENT_COMMIT="__SITEWATCH_AGENT_COMMIT__"
 
 while [[ $# -gt 0 ]]; do
@@ -100,6 +100,10 @@ else
   printf 'SITEWATCH_SERVER_URL=%s\nSITEWATCH_AGENT_TOKEN=%s\n' "$SERVER_URL" "$AGENT_TOKEN" > "$ENV_FILE"
   [[ -z "$DISCOVERY_CIDRS" ]] || printf 'SITEWATCH_DISCOVERY_CIDRS=%s\n' "$DISCOVERY_CIDRS" >> "$ENV_FILE"
 fi
+grep -q '^SITEWATCH_LOCAL_ADMIN_ENABLED=' "$ENV_FILE" || printf 'SITEWATCH_LOCAL_ADMIN_ENABLED=true\n' >> "$ENV_FILE"
+grep -q '^SITEWATCH_LOCAL_ADMIN_BIND=' "$ENV_FILE" || printf 'SITEWATCH_LOCAL_ADMIN_BIND=127.0.0.1\n' >> "$ENV_FILE"
+grep -q '^SITEWATCH_LOCAL_ADMIN_PORT=' "$ENV_FILE" || printf 'SITEWATCH_LOCAL_ADMIN_PORT=8765\n' >> "$ENV_FILE"
+grep -q '^SITEWATCH_LOCAL_ADMIN_LAN_ACCESS=' "$ENV_FILE" || printf 'SITEWATCH_LOCAL_ADMIN_LAN_ACCESS=false\n' >> "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
 cat > "/etc/systemd/system/$SERVICE_NAME.service" <<EOF
@@ -133,3 +137,4 @@ echo "NodeVyu Linux agent installed/upgraded successfully."
 echo "Service: $SERVICE_NAME ($(systemctl is-active "$SERVICE_NAME"))"
 echo "Agent version: $VERSION"
 echo "Install path: $INSTALL_PATH"
+echo "Local admin: http://127.0.0.1:8765"
