@@ -11,6 +11,52 @@ DETACHED_PROCESS = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
 CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
 
 
+def _schedule_restart() -> dict:
+    if os.name != "nt":
+        unit_name = f"nodevyu-agent-rekey-{os.getpid()}"
+        result = subprocess.run(
+            [
+                "systemd-run",
+                "--quiet",
+                "--collect",
+                f"--unit={unit_name}",
+                "--on-active=10s",
+                "/bin/systemctl",
+                "restart",
+                "nodevyu-agent",
+            ],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=10,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                (result.stderr or result.stdout or "systemd-run restart scheduling failed").strip()
+            )
+        return {"service": "nodevyu-agent", "delaySeconds": 10}
+
+    restart_script = "Start-Sleep -Seconds 10; Restart-Service -Name 'NodeVyuAgent' -Force"
+    subprocess.Popen(
+        [
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            restart_script,
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+        close_fds=True,
+    )
+    return {"service": "NodeVyuAgent", "delaySeconds": 10}
+
+
 def apply_pending_rekey(server: str, token: str) -> dict:
     response = requests.get(
         server.rstrip("/") + "/api/agent/rekey",
@@ -43,16 +89,9 @@ def apply_pending_rekey(server: str, token: str) -> dict:
     temp_path.write_text("\n".join(updated) + "\n", encoding="ascii")
     os.replace(temp_path, env_path)
 
-    # Restart out-of-process after the current command result has enough time to
-    # post using the old credential. The restarted service loads the staged token,
-    # and the server promotes it on first successful authentication.
-    restart_script = "Start-Sleep -Seconds 10; Restart-Service -Name 'SiteWatcherAgent' -Force"
-    subprocess.Popen(
-        ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", restart_script],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-        close_fds=True,
-    )
-    return {"ok": True, "message": "Replacement agent key written. SiteWatcher Agent will restart and reconnect with the new key."}
+    restart = _schedule_restart()
+    return {
+        "ok": True,
+        "message": "Replacement agent key written. NodeVyu Agent will restart and reconnect with the new key.",
+        **restart,
+    }
