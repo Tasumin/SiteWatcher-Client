@@ -5,9 +5,9 @@ from sitewatch_agent.ai_detector import _decode_rows, _letterbox, _nms, _normali
 
 
 def test_normalize_ultralytics_feature_first_output():
-    raw = np.zeros((1, 84, 10), dtype=np.float32)
+    raw = np.zeros((1, 84, 8400), dtype=np.float32)
     rows = _normalize_output(raw)
-    assert rows.shape == (10, 84)
+    assert rows.shape == (8400, 84)
 
 
 def test_decode_yolov8_style_rows():
