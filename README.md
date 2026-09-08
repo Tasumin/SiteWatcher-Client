@@ -2,7 +2,7 @@
 
 Native Windows and Linux monitoring agent for **NodeVyu**.
 
-Current version: **1.2.1**
+Current version: **1.2.2**
 
 The Windows agent runs as a Windows service named **NodeVyuAgent** using WinSW. The Linux agent runs as a native **systemd** service named **nodevyu-agent**. Docker and WSL are not required.
 
@@ -39,7 +39,7 @@ Existing agents that still use `https://monitoring.talondns.com` remain supporte
 - Remote console, reverse tunnel and agent host monitoring
 - Duplicate-worker protection
 - Timestamped subsystem log files
-- AI Detection beta plugin capability reporting and opt-in foundation
+- AI Detection beta plugin with ONNX Runtime capability/provider reporting
 - Local troubleshooting web UI on `http://127.0.0.1:8765` for status, logs, connectivity, updates, service restart, SSH/TightVNC management and safe configuration
 
 ## Windows installation
@@ -186,7 +186,7 @@ Python, required packages, WinSW and FFmpeg are handled by the native installer 
 
 ## AI Detection beta opt-in
 
-The agent advertises an optional **AI Detection** beta plugin capability. No inference runtime is started by this change.
+The agent advertises an optional **AI Detection** beta plugin capability. ONNX Runtime is installed with the agent and its available execution providers are reported to NodeVyu and the local admin UI. Camera inference/model processing is not started yet.
 
 Local opt-in is controlled with:
 
@@ -194,6 +194,6 @@ Local opt-in is controlled with:
 SITEWATCH_BETA_AI_DETECTION=true
 ```
 
-The default is disabled. When the server includes an explicit AI Detection beta setting in agent configuration, the server/admin value overrides the local environment value so an administrator can manage the beta from NodeVyu without reinstalling the agent.
+The default is disabled. The same setting is editable from the local agent admin UI under Safe Configuration. When the server includes an explicit AI Detection beta setting in agent configuration, the server/admin value overrides the local environment value so an administrator can manage the beta from NodeVyu without reinstalling the agent.
 
 Supported server configuration shapes are `betaFeatures.aiDetection.enabled` and `plugins.aiDetection.enabled` / `plugins["ai-detection"].enabled`.
