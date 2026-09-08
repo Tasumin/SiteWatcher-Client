@@ -33,6 +33,8 @@ SAFE_CONFIG_KEYS = {
     "SITEWATCH_LOCAL_ADMIN_PORT",
     "SITEWATCH_LOCAL_ADMIN_LAN_ACCESS",
     "SITEWATCH_BETA_AI_DETECTION",
+    "SITEWATCH_AI_MODEL_PATH",
+    "SITEWATCH_AI_LABELS_PATH",
 }
 SECRET_KEYS = {"SITEWATCH_AGENT_TOKEN"}
 
@@ -76,7 +78,7 @@ async function j(path,opts={}){const r=await fetch(path,{cache:"no-store",header
 function metric(label,value,klass=""){return '<div class="metric"><span>'+esc(label)+'</span><b class="'+klass+'">'+esc(value)+'</b></div>'}
 async function loadStatus(){try{const s=await j("/api/status");$("platform").textContent=s.platform.system+" "+s.platform.release;$("status").innerHTML=metric("Version",s.version)+metric("Hostname",s.hostname)+metric("Agent service",s.service.status,s.service.running?"good":"bad")+metric("PID",s.pid)+metric("Process uptime",s.uptime)+metric("Server",s.serverUrl)+metric("Local UI",s.localAdminUrl)}catch(e){$("status").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function loadConnectivity(){try{$("connectivity").innerHTML=metric("Status","Testing…");const c=await j("/api/connectivity");$("connectivity").innerHTML=metric("DNS",c.dns.ok?c.dns.addresses.join(", "):c.dns.error,c.dns.ok?"good":"bad")+metric("TCP "+c.tcp.port,c.tcp.ok?"Connected":c.tcp.error,c.tcp.ok?"good":"bad")+metric("NodeVyu API",c.api.ok?"Authenticated":c.api.error,c.api.ok?"good":"bad")}catch(e){$("connectivity").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
-async function loadAi(){try{const p=await j("/api/ai");const r=p.runtime||{};$("aiStatus").innerHTML=metric("Beta opt-in",p.enabled?"Enabled":"Disabled",p.enabled?"good":"warn")+metric("ONNX Runtime",r.installed?("v"+(r.version||"unknown")):"Not installed",r.ready?"good":"warn")+metric("Provider",r.preferredProvider||"None",r.ready?"good":"warn")+metric("Available providers",(r.providers||[]).join(", ")||"None")}catch(e){$("aiStatus").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
+async function loadAi(){try{const p=await j("/api/ai");const r=p.runtime||{},m=p.model||{};$("aiStatus").innerHTML=metric("Beta opt-in",p.enabled?"Enabled":"Disabled",p.enabled?"good":"warn")+metric("ONNX Runtime",r.installed?("v"+(r.version||"unknown")):"Not installed",r.ready?"good":"warn")+metric("Provider",r.preferredProvider||"None",r.ready?"good":"warn")+metric("Available providers",(r.providers||[]).join(", ")||"None")+metric("Detection model",m.present?"Ready":"Not installed",m.present?"good":"warn")+metric("Model path",m.path||"Not configured")}catch(e){$("aiStatus").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function loadRemote(){try{const r=await j("/api/remote-access");let h='<div class="grid">';if(r.platform==="linux"){h+=metric("OpenSSH",r.status.installed?"Installed":"Not installed",r.status.installed?"good":"warn")+metric("ssh.service",r.status.serviceStatus,r.status.ready?"good":"warn")+metric("Port 22",r.status.listening?"Listening":"Not listening",r.status.listening?"good":"warn");h+='</div><div class="actions" style="margin-top:12px"><button onclick="action(\'ssh_install\')">Install & Enable SSH</button><button class="secondary" onclick="action(\'ssh_repair\')">Repair SSH</button><button class="secondary" onclick="action(\'ssh_restart\')">Restart SSH</button>'}else{h+=metric("TightVNC",r.status.installed?"Installed":"Not installed",r.status.installed?"good":"warn")+metric("Service",r.status.serviceStatus||"Unknown",r.status.ready?"good":"warn")+metric("Port 5900",r.status.listening?"Listening":"Not listening",r.status.listening?"good":"warn");h+='</div><div class="actions" style="margin-top:12px"><button onclick="action(\'vnc_install\')">Install TightVNC</button><button class="secondary" onclick="action(\'vnc_restart\')">Restart TightVNC</button><button class="danger" onclick="action(\'vnc_uninstall\')">Uninstall TightVNC</button>'}h+='<button class="secondary" onclick="loadRemote()">Refresh Status</button></div>';$("remoteAccess").innerHTML=h}catch(e){$("remoteAccess").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function action(name){if(name==="vnc_uninstall"&&!confirm("Uninstall TightVNC?"))return;try{$("actionMessage").innerHTML='<div class="notice">Working…</div>';const r=await j("/api/action",{method:"POST",body:JSON.stringify({action:name})});$("actionMessage").innerHTML='<div class="notice">'+esc(r.message||"Action completed.")+'</div>';setTimeout(()=>{loadStatus();loadRemote()},1200)}catch(e){$("actionMessage").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function loadLogs(){const b=await j("/api/logs");$("logFile").innerHTML=b.files.map(x=>'<option value="'+esc(x.name)+'">'+esc(x.name)+" — "+esc(x.size)+" bytes</option>").join("");if(b.files.length)loadLog();else $("logOutput").textContent="No log files found."}
@@ -280,6 +282,8 @@ def _safe_config_values() -> dict[str, str]:
         "SITEWATCH_LOCAL_ADMIN_PORT": "8765",
         "SITEWATCH_LOCAL_ADMIN_LAN_ACCESS": "false",
         "SITEWATCH_BETA_AI_DETECTION": "false",
+        "SITEWATCH_AI_MODEL_PATH": "",
+        "SITEWATCH_AI_LABELS_PATH": "",
     }
     return {key: current.get(key, os.getenv(key, default)) for key, default in defaults.items()}
 
