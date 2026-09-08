@@ -93,11 +93,13 @@ def _launch_self_update():
 
 def _launch_service_restart():
     if os.name != "nt":
-        subprocess.Popen(
-            ["/bin/bash", "-lc", "sleep 5; systemctl restart nodevyu-agent"],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            close_fds=True, start_new_session=True,
+        unit_name = f"nodevyu-agent-restart-{os.getpid()}"
+        result = subprocess.run(
+            ["systemd-run", "--quiet", "--collect", f"--unit={unit_name}", "--on-active=5s", "/bin/systemctl", "restart", "nodevyu-agent"],
+            capture_output=True, text=True, errors="replace", timeout=10,
         )
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or result.stdout or "systemd-run restart scheduling failed").strip())
         return {"scheduled": True, "delaySeconds": 5, "service": "nodevyu-agent"}
     command=("Start-Sleep -Seconds 5; $svc=Get-Service -Name 'NodeVyuAgent' -ErrorAction Stop; Restart-Service -Name $svc.Name -Force -ErrorAction Stop")
     flags=getattr(subprocess,"CREATE_NO_WINDOW",0)|getattr(subprocess,"CREATE_NEW_PROCESS_GROUP",0)|getattr(subprocess,"DETACHED_PROCESS",0)
