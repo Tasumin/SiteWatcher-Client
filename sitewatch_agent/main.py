@@ -81,6 +81,7 @@ def fetch_config():
 def ai_model_provision_loop():
     time.sleep(2)
     last_enabled = None
+    last_ready = None
     while True:
         try:
             enabled, source = resolve_ai_detection_beta(config)
@@ -88,8 +89,12 @@ def ai_model_provision_loop():
                 if last_enabled is not True:
                     print(f"[ai-model] beta enabled source={source}; checking managed model", flush=True)
                 status = ensure_managed_model()
-                if status.get("present") and status.get("managed"):
+                ready = bool(status.get("present") and status.get("managed") and status.get("verified") is not False)
+                if ready and last_ready is not True:
                     print(f"[ai-model] model ready id={status.get('id')} version={status.get('version')}", flush=True)
+                last_ready = ready
+            else:
+                last_ready = None
             last_enabled = enabled
         except Exception as e:
             print(f"[ai-model] worker error: {e}", flush=True)
