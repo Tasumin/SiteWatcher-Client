@@ -2,7 +2,7 @@
 
 Native Windows and Linux monitoring agent for **NodeVyu**.
 
-Current version: **1.2.5**
+Current version: **1.2.6**
 
 The Windows agent runs as a Windows service named **NodeVyuAgent** using WinSW. The Linux agent runs as a native **systemd** service named **nodevyu-agent**. Docker and WSL are not required.
 
@@ -240,3 +240,24 @@ bird, cat, dog, horse, sheep, cow, bear, zebra, giraffe, elephant
 ```
 
 The local Agent Admin detection test creates an annotated JPEG preview with bounding boxes and confidence labels. When at least one matching object is found, it also records a short 4-second browser-compatible MP4 evidence clip from the same RTSP camera. Evidence stays local under `data/ai-evidence/`, is not uploaded as an event, and old test evidence is automatically cleaned up.
+
+
+### North American wildlife model
+
+When AI Detection beta is enabled, NodeVyu now provisions a second managed ONNX detector specifically for North American wildlife. It runs alongside the general YOLOX model during the local detection test.
+
+Managed wildlife targets currently normalized by NodeVyu:
+
+```text
+deer
+rabbit
+bear
+fox
+coyote
+```
+
+The wildlife model also contains additional North American species, but NodeVyu currently filters it to the targets above for the beta test path.
+
+Goat is intentionally not inferred yet because the selected managed wildlife model does not include a goat class. NodeVyu does not relabel sheep or bighorn sheep as goat.
+
+Deer is currently reported as `deer`. Buck/doe classification is not guessed from image edges; a future antler/sex-specific model can refine deer detections when reliable evidence is available.
