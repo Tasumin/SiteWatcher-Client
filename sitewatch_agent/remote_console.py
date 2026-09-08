@@ -12,6 +12,7 @@ from .agent_logs import collect_agent_log, collect_agent_logs, create_agent_logs
 from .tightvnc import get_tightvnc_status, install_tightvnc, restart_tightvnc, uninstall_tightvnc
 from .virtual_display_repair import get_virtual_display_status, manage_virtual_display
 from .rekey import apply_pending_rekey
+from .linux_ssh import get_ssh_status, install_ssh, repair_ssh, restart_ssh
 
 SERVER = os.environ["SITEWATCH_SERVER_URL"].rstrip("/")
 TOKEN = os.environ["SITEWATCH_AGENT_TOKEN"]
@@ -32,6 +33,10 @@ VDD_INSTALL_COMMAND = "__SITEWATCH_VDD_INSTALL__"
 VDD_ENABLE_COMMAND = "__SITEWATCH_VDD_ENABLE__"
 VDD_DISABLE_COMMAND = "__SITEWATCH_VDD_DISABLE__"
 VDD_REPAIR_COMMAND = "__SITEWATCH_VDD_REPAIR__"
+SSH_STATUS_COMMAND = "__SITEWATCH_SSH_STATUS__"
+SSH_INSTALL_COMMAND = "__SITEWATCH_SSH_INSTALL__"
+SSH_REPAIR_COMMAND = "__SITEWATCH_SSH_REPAIR__"
+SSH_RESTART_COMMAND = "__SITEWATCH_SSH_RESTART__"
 SCAN_PORTS = (22, 53, 80, 443, 554, 8000, 8080, 9000)
 BLOCKED_TOKENS = (";", "&&", "||", "|", ">", "<", "`", "$(", "@(")
 ALLOWED_PREFIXES = ("ping ","ping.exe ","tracert ","tracert.exe ","traceroute ","tracepath ","pathping ","pathping.exe ","nslookup ","nslookup.exe ","dig ","curl ","curl.exe ","arp ","arp.exe ","ipconfig","ip ","route ","route print","route.exe print","ss ","netstat ","netstat.exe ","resolvectl ","systemctl status ","test-netconnection ","resolve-dnsname ","get-netipaddress","get-netroute","get-netadapter","get-nettcpconnection","get-netneighbor","get-dnsclient","get-dnsclientserveraddress","invoke-webrequest ","invoke-restmethod ")
@@ -175,6 +180,23 @@ def _handle_vdd(command):
     return {"stdout":json.dumps(r),"stderr":"","exitCode":0}
 
 
+
+def _handle_ssh(command):
+    if os.name == "nt":
+        raise RuntimeError("Linux SSH maintenance is only available on Linux agents.")
+    if command == SSH_STATUS_COMMAND:
+        result = get_ssh_status()
+    elif command == SSH_INSTALL_COMMAND:
+        result = install_ssh()
+    elif command == SSH_REPAIR_COMMAND:
+        result = repair_ssh()
+    elif command == SSH_RESTART_COMMAND:
+        result = restart_ssh()
+    else:
+        raise ValueError("Unknown Linux SSH maintenance command")
+    return {"stdout": json.dumps(result), "stderr": "", "exitCode": 0}
+
+
 def remote_console_loop():
     time.sleep(3)
     while True:
@@ -204,6 +226,11 @@ def remote_console_loop():
                 print(f"[vnc] maintenance command={command} job id={command_id[:8]}",flush=True)
                 try:_post_result(command_id,_handle_vnc(command))
                 except Exception as e:_post_result(command_id,{"stdout":"","stderr":f"TightVNC operation failed: {e}","exitCode":1})
+                continue
+            if command in (SSH_STATUS_COMMAND,SSH_INSTALL_COMMAND,SSH_REPAIR_COMMAND,SSH_RESTART_COMMAND) and shell=="system":
+                print(f"[ssh] maintenance command={command} job id={command_id[:8]}",flush=True)
+                try:_post_result(command_id,_handle_ssh(command))
+                except Exception as e:_post_result(command_id,{"stdout":"","stderr":f"SSH operation failed: {e}","exitCode":1})
                 continue
             if command in (VDD_STATUS_COMMAND,VDD_INSTALL_COMMAND,VDD_ENABLE_COMMAND,VDD_DISABLE_COMMAND,VDD_REPAIR_COMMAND) and shell=="system":
                 print(f"[vdd] maintenance command={command} job id={command_id[:8]}",flush=True)
