@@ -1,0 +1,84 @@
+{
+  "releases": [
+    {
+      "version": "1.2.9",
+      "date": "2026-09-08",
+      "title": "Visible agent release notes",
+      "summary": "Adds user-facing release notes and improves live AI throughput by disabling the slower wildlife model during live RTSP testing.",
+      "recommended": true,
+      "changes": [
+        "Adds a structured changelog for each agent version.",
+        "Shows the latest release notes in the local Agent Admin UI when an update is available.",
+        "Makes release notes available to the NodeVyu server for the web update interface.",
+        "Adds a test that requires the current agent version to have a changelog entry.",
+        "Disables wildlife inference during live RTSP AI testing so the general detector can run at a higher effective FPS."
+      ]
+    },
+    {
+      "version": "1.2.8",
+      "date": "2026-09-08",
+      "title": "Live RTSP AI testing",
+      "summary": "Adds a temporary live AI test against a camera RTSP stream.",
+      "recommended": false,
+      "changes": [
+        "Adds Start Live AI with 0.5, 1, and 2 AI FPS modes.",
+        "Keeps one FFmpeg RTSP connection open while testing.",
+        "Runs general and wildlife models on sampled frames.",
+        "Shows annotated live frames, detections, AI FPS, and inference latency.",
+        "Stops temporary live sessions when stopped, replaced, closed, or idle."
+      ]
+    },
+    {
+      "version": "1.2.7",
+      "date": "2026-09-08",
+      "title": "Still-image AI testing",
+      "summary": "Adds image-based AI testing without requiring a live camera stream.",
+      "recommended": false,
+      "changes": [
+        "Adds browser image upload testing.",
+        "Adds testing of an image file already stored on the agent.",
+        "Runs both general and wildlife models and returns an annotated preview.",
+        "Adds image size, type, and decoded-dimension safety limits."
+      ]
+    },
+    {
+      "version": "1.2.6",
+      "date": "2026-09-08",
+      "title": "North American wildlife detection",
+      "summary": "Adds a managed wildlife model alongside the general object detector.",
+      "recommended": false,
+      "changes": [
+        "Adds deer, rabbit, bear, fox, and coyote detection through a dedicated wildlife model.",
+        "Automatically provisions and verifies the wildlife ONNX model.",
+        "Does not guess goat or buck/doe labels when the model does not support them.",
+        "Keeps wildlife testing local to the agent."
+      ]
+    },
+    {
+      "version": "1.2.5",
+      "date": "2026-09-08",
+      "title": "Animal detection and local evidence",
+      "summary": "Expands common animal detection and adds visual evidence for AI tests.",
+      "recommended": false,
+      "changes": [
+        "Adds bird, cat, dog, horse, sheep, cow, bear, zebra, giraffe, and elephant to default detection classes.",
+        "Adds annotated detection previews.",
+        "Adds short local MP4 evidence clips when matching objects are detected.",
+        "Adds browser range support for local evidence playback."
+      ]
+    },
+    {
+      "version": "1.2.4",
+      "date": "2026-09-08",
+      "title": "Managed AI model and version visibility",
+      "summary": "Automatically provisions the AI model and shows installed versus latest agent version.",
+      "recommended": true,
+      "changes": [
+        "Automatically downloads and SHA-256 verifies the managed YOLOX-Tiny model after AI Detection is enabled.",
+        "Stores managed model data under the preserved agent data directory.",
+        "Shows installed version, latest version, and update status in the local Agent Admin UI.",
+        "Never overwrites a custom SITEWATCH_AI_MODEL_PATH."
+      ]
+    }
+  ]
+}

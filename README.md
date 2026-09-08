@@ -2,7 +2,7 @@
 
 Native Windows and Linux monitoring agent for **NodeVyu**.
 
-Current version: **1.2.8**
+Current version: **1.2.9**
 
 The Windows agent runs as a Windows service named **NodeVyuAgent** using WinSW. The Linux agent runs as a native **systemd** service named **nodevyu-agent**. Docker and WSL are not required.
 
@@ -302,3 +302,16 @@ Live AI is intentionally temporary:
 - closing the local UI attempts to stop the session immediately
 - an idle session automatically stops if the UI stops polling it
 - no live AI detections are uploaded as NodeVyu events yet
+
+
+## Agent changelog
+
+Every NodeVyu Agent version must have an entry in `CHANGELOG.json`. The current-version test fails if the version is bumped without a corresponding release-note entry.
+
+Each release note includes:
+- version and release date
+- a short title and summary
+- user-visible changes
+- whether the update is recommended
+
+NodeVyu uses this structured changelog to show users what changed before they choose to update from either the server dashboard or the local Agent Admin UI.
