@@ -261,12 +261,6 @@ def _ai_cameras() -> list[dict]:
     return cameras
 
 
-AI_SECURITY_CLASSES = [
-    "person", "car", "truck", "bus", "motorcycle", "bicycle",
-    "bird", "cat", "dog", "horse", "sheep", "cow", "bear", "zebra", "giraffe", "elephant",
-]
-
-
 def _cleanup_ai_evidence(max_age_seconds: int = 3600) -> None:
     if not AI_EVIDENCE_DIR.exists():
         return
@@ -322,7 +316,7 @@ def _save_ai_evidence(preview_jpeg: bytes, clip_mp4: bytes | None) -> tuple[str,
 def _run_ai_test(camera_id: str) -> dict:
     import io
     from PIL import Image
-    from .ai_detector import OnnxObjectDetector
+    from .ai_detector import DEFAULT_DETECTION_CLASSES, OnnxObjectDetector
     from .beta_features import resolve_ai_detection_beta
     from .checks import capture_snapshot, capture_clip
 
@@ -349,7 +343,7 @@ def _run_ai_test(camera_id: str) -> dict:
         image,
         confidence_threshold=0.55,
         iou_threshold=0.45,
-        class_filter=AI_SECURITY_CLASSES,
+        class_filter=DEFAULT_DETECTION_CLASSES,
     )
 
     preview_jpeg = _annotated_preview(image, detections)
