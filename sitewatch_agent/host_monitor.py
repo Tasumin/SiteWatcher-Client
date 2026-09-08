@@ -122,25 +122,65 @@ def _linux_service_inventory():
     return inventory
 
 
-def _linux_host_data(monitored):
+def _linux_process_inventory():
+    result = subprocess.run(["ps", "-eo", "comm=,pid=,pcpu=,pmem="], capture_output=True, text=True, errors="replace", timeout=15)
+    if result.returncode != 0:
+        return []
+    grouped = {}
+    for raw in result.stdout.splitlines():
+        parts = raw.split()
+        if len(parts) < 4:
+            continue
+        name = parts[0]
+        try:
+            pid = int(parts[1]); cpu = float(parts[2]); memory = float(parts[3])
+        except ValueError:
+            continue
+        row = grouped.setdefault(name, {"name": name, "displayName": name, "status": "Running", "instances": 0, "pids": [], "cpuPercent": 0.0, "memoryPercent": 0.0})
+        row["instances"] += 1
+        if len(row["pids"]) < 20:
+            row["pids"].append(pid)
+        row["cpuPercent"] = round(float(row["cpuPercent"]) + cpu, 1)
+        row["memoryPercent"] = round(float(row["memoryPercent"]) + memory, 1)
+    return sorted(grouped.values(), key=lambda x: x["name"].lower())
+
+
+def _selected_processes(names, inventory):
+    by_name = {str(x.get("name") or "").lower(): x for x in inventory}
+    selected = []
+    for name in names:
+        row = by_name.get(str(name).lower())
+        selected.append(row or {"name": name, "displayName": name, "status": "Missing", "instances": 0, "pids": [], "cpuPercent": 0.0, "memoryPercent": 0.0})
+    return selected
+
+
+def _linux_host_data(monitored_services, monitored_processes):
     memory_percent, memory_total, memory_available = _linux_memory()
-    return {"cpuPercent": _linux_cpu_percent(), "memoryPercent": memory_percent, "memoryTotalBytes": memory_total, "memoryAvailableBytes": memory_available, "disks": _linux_disks(), "services": [_linux_service(name) for name in monitored], "serviceInventory": _linux_service_inventory()}
+    process_inventory = _linux_process_inventory()
+    return {"cpuPercent": _linux_cpu_percent(), "memoryPercent": memory_percent, "memoryTotalBytes": memory_total, "memoryAvailableBytes": memory_available, "disks": _linux_disks(), "services": [_linux_service(name) for name in monitored_services], "serviceInventory": _linux_service_inventory(), "processes": _selected_processes(monitored_processes, process_inventory), "processInventory": process_inventory}
 
 
 def collect_host_status(settings: dict) -> dict:
-    monitored = [str(x) for x in settings.get("monitoredServices", []) if str(x).strip()]
+    raw_targets = [str(x).strip() for x in settings.get("monitoredTargets", []) if str(x).strip()]
+    if not raw_targets:
+        raw_targets = [f"service:{str(x).strip()}" for x in settings.get("monitoredServices", []) if str(x).strip()]
+    monitored_services = [x.split(":", 1)[1] for x in raw_targets if x.startswith("service:") and ":" in x]
+    monitored_processes = [x.split(":", 1)[1] for x in raw_targets if x.startswith("process:") and ":" in x]
     _log(
         "collecting host status "
         f"cpuThreshold={settings.get('cpuThresholdPercent', 90)}% "
         f"memoryThreshold={settings.get('memoryThresholdPercent', 90)}% "
         f"diskThreshold={settings.get('diskThresholdPercent', 90)}% "
-        f"services={len(monitored)}"
+        f"services={len(monitored_services)} processes={len(monitored_processes)}"
     )
-    if monitored:
-        _log("monitored services: " + ", ".join(monitored))
+    if monitored_services:
+        _log("monitored services: " + ", ".join(monitored_services))
+    if monitored_processes:
+        _log("monitored processes: " + ", ".join(monitored_processes))
 
     if os.name == "nt":
-        service_json = json.dumps(monitored).replace("'", "''")
+        service_json = json.dumps(monitored_services).replace("'", "''")
+        process_json = json.dumps(monitored_processes).replace("'", "''")
         script = rf"""
     $ErrorActionPreference='SilentlyContinue'
     $cpu=(Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
@@ -153,17 +193,27 @@ def collect_host_status(settings: dict) -> dict:
       [pscustomobject]@{{name=$_.DeviceID;label=$_.VolumeName;sizeBytes=[int64]$_.Size;freeBytes=[int64]$_.FreeSpace;usedPercent=$used}}
     }})
     $wanted=ConvertFrom-Json '{service_json}'
+    $wantedProcesses=ConvertFrom-Json '{process_json}'
     $all=@(Get-CimInstance Win32_Service | Sort-Object DisplayName | ForEach-Object {{[pscustomobject]@{{name=$_.Name;displayName=$_.DisplayName;status=$_.State;startMode=$_.StartMode}}}})
     $selected=@()
     foreach($name in @($wanted)){{
       $svc=$all | Where-Object {{$_.name -eq $name}} | Select-Object -First 1
       if($svc){{$selected += $svc}}else{{$selected += [pscustomobject]@{{name=$name;displayName=$name;status='Missing';startMode='Unknown'}}}}
     }}
-    [pscustomobject]@{{cpuPercent=if($null-ne$cpu){{[math]::Round([double]$cpu,1)}}else{{$null}};memoryPercent=$mem;memoryTotalBytes=$total;memoryAvailableBytes=$free;disks=$disks;services=$selected;serviceInventory=$all}} | ConvertTo-Json -Depth 6 -Compress
+    $procAll=@(Get-Process | Group-Object ProcessName | Sort-Object Name | ForEach-Object {{
+      $group=$_.Group
+      [pscustomobject]@{{name=$_.Name;displayName=$_.Name;status='Running';instances=$group.Count;pids=@($group.Id | Select-Object -First 20)}}
+    }})
+    $procSelected=@()
+    foreach($name in @($wantedProcesses)){{
+      $proc=$procAll | Where-Object {{$_.name -ieq $name}} | Select-Object -First 1
+      if($proc){{$procSelected += $proc}}else{{$procSelected += [pscustomobject]@{{name=$name;displayName=$name;status='Missing';instances=0;pids=@()}}}}
+    }}
+    [pscustomobject]@{{cpuPercent=if($null-ne$cpu){{[math]::Round([double]$cpu,1)}}else{{$null}};memoryPercent=$mem;memoryTotalBytes=$total;memoryAvailableBytes=$free;disks=$disks;services=$selected;serviceInventory=$all;processes=$procSelected;processInventory=$procAll}} | ConvertTo-Json -Depth 6 -Compress
     """
         data = _ps_json(script, 60) or {}
     else:
-        data = _linux_host_data(monitored)
+        data = _linux_host_data(monitored_services, monitored_processes)
 
     cpu_threshold = float(settings.get("cpuThresholdPercent", 90))
     memory_threshold = float(settings.get("memoryThresholdPercent", 90))
@@ -173,6 +223,7 @@ def collect_host_status(settings: dict) -> dict:
     memory = data.get("memoryPercent")
     disks = data.get("disks") or []
     services = data.get("services") or []
+    processes = data.get("processes") or []
 
     if cpu is not None and float(cpu) >= cpu_threshold:
         problems.append(f"CPU {float(cpu):.1f}% >= {cpu_threshold:.1f}%")
@@ -185,10 +236,14 @@ def collect_host_status(settings: dict) -> dict:
     for service in services:
         if str(service.get("status") or "").lower() != "running":
             problems.append(f"Service {service.get('displayName') or service.get('name')} is {service.get('status') or 'Unknown'}")
+    for process in processes:
+        if str(process.get("status") or "").lower() != "running":
+            problems.append(f"Process {process.get('displayName') or process.get('name')} is {process.get('status') or 'Unknown'}")
 
     disk_summary = ", ".join(f"{d.get('name')}={d.get('usedPercent')}%" for d in disks) or "none"
     service_summary = ", ".join(f"{s.get('name')}={s.get('status')}" for s in services) or "none selected"
-    _log(f"values cpu={cpu}% memory={memory}% disks=[{disk_summary}] services=[{service_summary}]")
+    process_summary = ", ".join(f"{p.get('name')}={p.get('status')}" for p in processes) or "none selected"
+    _log(f"values cpu={cpu}% memory={memory}% disks=[{disk_summary}] services=[{service_summary}] processes=[{process_summary}]")
     if problems:
         _log("threshold/service problems: " + " | ".join(problems))
     else:
@@ -204,6 +259,8 @@ def collect_host_status(settings: dict) -> dict:
         "disks": disks,
         "services": services,
         "serviceInventory": data.get("serviceInventory") or [],
+        "processes": processes,
+        "processInventory": data.get("processInventory") or [],
         "overallOk": len(problems) == 0,
         "problems": problems,
     }
@@ -234,7 +291,7 @@ def host_monitor_loop():
                 f"cpu={settings.get('cpuThresholdPercent', 90)}% "
                 f"memory={settings.get('memoryThresholdPercent', 90)}% "
                 f"disk={settings.get('diskThresholdPercent', 90)}% "
-                f"services={len(settings.get('monitoredServices') or [])}"
+                f"targets={len(settings.get('monitoredTargets') or settings.get('monitoredServices') or [])}"
             )
 
             if not enabled:
