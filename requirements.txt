@@ -4,3 +4,4 @@ lxml>=6.0,<7
 websocket-client==1.8.0
 pysnmp>=7.1,<8
 onnxruntime>=1.22,<2
+numpy>=2.0,<3
