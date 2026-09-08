@@ -349,12 +349,13 @@ def _run_ai_test(camera_id: str) -> dict:
     preview_jpeg = _annotated_preview(image, detections)
     clip_data = None
     clip_error = None
-    try:
-        clip = capture_clip(device, duration_seconds=4)
-        clip_data = clip.get("mp4") if clip else None
-    except Exception as exc:
-        clip_error = str(exc)
-        print(f"[ai] evidence clip failed camera={device.get('id')}: {clip_error}", flush=True)
+    if detections:
+        try:
+            clip = capture_clip(device, duration_seconds=4)
+            clip_data = clip.get("mp4") if clip else None
+        except Exception as exc:
+            clip_error = str(exc)
+            print(f"[ai] evidence clip failed camera={device.get('id')}: {clip_error}", flush=True)
 
     preview_name, clip_name = _save_ai_evidence(preview_jpeg, clip_data)
     return {
