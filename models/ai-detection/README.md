@@ -1,0 +1,45 @@
+# NodeVyu AI Detection model directory
+
+The AI Detection beta looks for an ONNX object-detection model at:
+
+```text
+models/ai-detection/model.onnx
+```
+
+The path can be overridden with:
+
+```text
+SITEWATCH_AI_MODEL_PATH=/path/to/model.onnx
+SITEWATCH_AI_LABELS_PATH=/path/to/labels.json
+```
+
+The current detector supports common YOLO-style ONNX exports that return a
+single tensor containing `xywh` boxes and class scores, including the common
+Ultralytics `[1,84,8400]` / `[1,8400,84]` layout and YOLOv5-style
+`[1,N,85]` output with objectness.
+
+Model weights are intentionally not committed to this repository. This keeps
+agent releases small and allows NodeVyu to version/distribute models separately
+in a later phase.
+
+The bundled `labels.json` contains the standard 80 COCO object labels used by
+many compatible general-purpose object detection models.
+
+## Single-frame benchmark
+
+After enabling the AI Detection beta and placing a compatible model in this
+directory, test a standalone camera assigned to the local agent:
+
+```bash
+python -m sitewatch_agent.ai_test --device-id CAMERA_UUID --runs 10
+```
+
+Or benchmark a local image without contacting NodeVyu:
+
+```bash
+python -m sitewatch_agent.ai_test --image test.jpg --runs 10
+```
+
+By default the benchmark reports the security-relevant classes person, car,
+truck, bus, motorcycle and bicycle. Pass an empty `--classes ""` value to
+show every class.
