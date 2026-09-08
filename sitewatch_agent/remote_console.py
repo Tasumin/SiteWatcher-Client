@@ -34,8 +34,8 @@ VDD_DISABLE_COMMAND = "__SITEWATCH_VDD_DISABLE__"
 VDD_REPAIR_COMMAND = "__SITEWATCH_VDD_REPAIR__"
 SCAN_PORTS = (22, 53, 80, 443, 554, 8000, 8080, 9000)
 BLOCKED_TOKENS = (";", "&&", "||", "|", ">", "<", "`", "$(", "@(")
-ALLOWED_PREFIXES = ("ping ","ping.exe ","tracert ","tracert.exe ","pathping ","pathping.exe ","nslookup ","nslookup.exe ","curl ","curl.exe ","arp ","arp.exe ","ipconfig","route print","route.exe print","netstat ","netstat.exe ","test-netconnection ","resolve-dnsname ","get-netipaddress","get-netroute","get-netadapter","get-nettcpconnection","get-netneighbor","get-dnsclient","get-dnsclientserveraddress","invoke-webrequest ","invoke-restmethod ")
-FULL_SHELLS = ("powershell_full", "cmd_full")
+ALLOWED_PREFIXES = ("ping ","ping.exe ","tracert ","tracert.exe ","traceroute ","tracepath ","pathping ","pathping.exe ","nslookup ","nslookup.exe ","dig ","curl ","curl.exe ","arp ","arp.exe ","ipconfig","ip ","route ","route print","route.exe print","ss ","netstat ","netstat.exe ","resolvectl ","systemctl status ","test-netconnection ","resolve-dnsname ","get-netipaddress","get-netroute","get-netadapter","get-nettcpconnection","get-netneighbor","get-dnsclient","get-dnsclientserveraddress","invoke-webrequest ","invoke-restmethod ")
+FULL_SHELLS = ("powershell_full", "cmd_full", "bash_full")
 OUTPUT_LIMIT = 200000
 
 _HTTP = requests.Session()
@@ -53,7 +53,13 @@ def _allowed(command:str):
 
 def _execute(command, shell, timeout_seconds):
     is_cmd = shell in ("cmd", "cmd_full")
-    argv = ["cmd.exe","/d","/s","/c",command] if is_cmd else ["powershell.exe","-NoLogo","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-Command",command]
+    is_bash = shell in ("bash", "sh", "bash_full")
+    if is_bash:
+        argv = ["/bin/bash", "-lc", command]
+    elif is_cmd:
+        argv = ["cmd.exe", "/d", "/s", "/c", command]
+    else:
+        argv = ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command]
     try:
         c=subprocess.run(argv,capture_output=True,text=True,errors="replace",timeout=timeout_seconds,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
         return {"stdout":(c.stdout or "")[:OUTPUT_LIMIT],"stderr":(c.stderr or "")[:OUTPUT_LIMIT],"exitCode":c.returncode}
@@ -84,6 +90,13 @@ def _launch_self_update():
 
 
 def _launch_service_restart():
+    if os.name != "nt":
+        subprocess.Popen(
+            ["/bin/bash", "-lc", "sleep 5; systemctl restart nodevyu-agent"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            close_fds=True, start_new_session=True,
+        )
+        return {"scheduled": True, "delaySeconds": 5, "service": "nodevyu-agent"}
     command=("Start-Sleep -Seconds 5; $svc=Get-Service -Name 'NodeVyuAgent' -ErrorAction Stop; Restart-Service -Name $svc.Name -Force -ErrorAction Stop")
     flags=getattr(subprocess,"CREATE_NO_WINDOW",0)|getattr(subprocess,"CREATE_NEW_PROCESS_GROUP",0)|getattr(subprocess,"DETACHED_PROCESS",0)
     subprocess.Popen(["powershell.exe","-NoLogo","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-Command",command],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True,creationflags=flags)
@@ -98,7 +111,7 @@ def _scan_host(ip, ports):
         except OSError:pass
     alive=bool(found)
     if not alive:
-        try:alive=subprocess.run(["ping.exe","-n","1","-w","350",ip],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=1,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0)).returncode==0
+        try:\n            ping_cmd=["ping.exe","-n","1","-w","350",ip] if os.name=="nt" else ["ping","-c","1","-W","1",ip]\n            alive=subprocess.run(ping_cmd,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=2,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0)).returncode==0
         except Exception:pass
     if not alive:return None
     try:hostname=socket.gethostbyaddr(ip)[0]
@@ -134,6 +147,7 @@ def _upload_log_bundle(command_id):
 
 
 def _handle_vnc(command):
+    if os.name != "nt": raise RuntimeError("TightVNC maintenance is only available on Windows agents.")
     if command==VNC_STATUS_COMMAND:r=get_tightvnc_status()
     elif command==VNC_INSTALL_COMMAND:r=install_tightvnc()
     elif command==VNC_RESTART_COMMAND:r=restart_tightvnc()
@@ -143,6 +157,7 @@ def _handle_vnc(command):
 
 
 def _handle_vdd(command):
+    if os.name != "nt": raise RuntimeError("Virtual display maintenance is only available on Windows agents.")
     if command==VDD_STATUS_COMMAND:r=get_virtual_display_status()
     elif command==VDD_INSTALL_COMMAND:r=manage_virtual_display("install")
     elif command==VDD_ENABLE_COMMAND:r=manage_virtual_display("enable")
