@@ -150,7 +150,7 @@ def _launch_self_update_linux() -> None:
     update_root = "/var/lib/nodevyu/updates"
     os.makedirs(update_root, exist_ok=True)
     script_path = os.path.join(update_root, f"nodevyu-update-{update_id}.sh")
-    installer_url = "https://raw.githubusercontent.com/Tasumin/SiteWatcher-Client/main/install-nodevyu-linux.sh"
+    installer_url = SERVER + "/downloads/nodevyu-agent?platform=linux"
     install_root = _install_root()
     script = f"""#!/usr/bin/env bash
 set -u
