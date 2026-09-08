@@ -3,6 +3,7 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 
 from .ai_runtime import get_ai_runtime_status
 from .ai_detector import get_ai_model_status
+from .ai_model_manager import get_wildlife_model_status
 
 AI_DETECTION_PLUGIN_ID = "ai-detection"
 AI_DETECTION_PLUGIN_VERSION = "0.2.0-beta.1"
@@ -89,6 +90,7 @@ def plugin_capabilities(
                 "enabledSource": source,
                 "runtime": get_ai_runtime_status(),
                 "model": get_ai_model_status(),
+                "wildlifeModel": get_wildlife_model_status(False),
             }
         ]
     }
