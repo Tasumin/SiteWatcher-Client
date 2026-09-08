@@ -2,9 +2,9 @@
 
 Native Windows and Linux monitoring agent for **NodeVyu**.
 
-Current version: **1.1.26**
+Current version: **1.2.0**
 
-The Windows agent runs as a Windows service named **NodeVyuAgent** using WinSW. The Linux beta runs as a native **systemd** service named **nodevyu-agent**. Docker and WSL are not required.
+The Windows agent runs as a Windows service named **NodeVyuAgent** using WinSW. The Linux agent runs as a native **systemd** service named **nodevyu-agent**. Docker and WSL are not required.
 
 Primary NodeVyu server:
 
@@ -40,6 +40,7 @@ Existing agents that still use `https://monitoring.talondns.com` remain supporte
 - Duplicate-worker protection
 - Timestamped subsystem log files
 - AI Detection beta plugin capability reporting and opt-in foundation
+- Local troubleshooting web UI on `http://127.0.0.1:8765` for status, logs, connectivity, updates, service restart, SSH/TightVNC management and safe configuration
 
 ## Windows installation
 
@@ -53,9 +54,9 @@ C:\NodeVyu-Agent
 
 The installer creates the **NodeVyuAgent** Windows service and installs/upgrades Python dependencies from `requirements.txt`.
 
-## Linux beta installation
+## Linux installation
 
-Initial Linux support targets Debian/Ubuntu on x86_64. The default installation path is:
+Production Linux support targets Ubuntu Server 24.04 LTS, Linux Mint 22.x, and Debian 12 on x86_64. The default installation path is:
 
 ```text
 /opt/nodevyu-agent
@@ -78,7 +79,28 @@ sudo bash run-nodevyu-linux.sh upgrade
 journalctl -u nodevyu-agent -f
 ```
 
-Windows-only TightVNC and virtual-display maintenance are intentionally unavailable on Linux. The shared monitoring runtime supports ping, TCP, HTTP(S), RTSP, SNMP, ONVIF, discovery, snapshots, live streaming, tunnels, host monitoring and the beta plugin framework.
+Windows uses TightVNC for browser remote desktop. Linux uses managed OpenSSH for browser Live SSH. The shared monitoring runtime supports ping, TCP, HTTP(S), RTSP, SNMP, ONVIF, discovery, snapshots, live streaming, tunnels, host monitoring and the plugin framework.
+
+## Local Agent Admin UI
+
+The agent includes a lightweight local troubleshooting interface with no login prompt. It binds to localhost by default:
+
+```text
+http://127.0.0.1:8765
+```
+
+The interface exposes agent status, NodeVyu connectivity checks, logs and log bundles, safe configuration values, agent restart/update actions, Linux OpenSSH management, and Windows TightVNC management. Agent tokens and other secrets are never displayed.
+
+Default settings:
+
+```text
+SITEWATCH_LOCAL_ADMIN_ENABLED=true
+SITEWATCH_LOCAL_ADMIN_BIND=127.0.0.1
+SITEWATCH_LOCAL_ADMIN_PORT=8765
+SITEWATCH_LOCAL_ADMIN_LAN_ACCESS=false
+```
+
+Set `SITEWATCH_LOCAL_ADMIN_LAN_ACCESS=true` only when intentionally exposing the unauthenticated troubleshooting interface to the local LAN.
 
 ## SiteWatcher migration
 
@@ -155,7 +177,7 @@ The rebrand deliberately does **not** rename the internal Python package (`sitew
 
 ## Requirements
 
-- Windows 10/11 or Windows Server, or Debian/Ubuntu Linux (beta)
+- Windows 10/11 or Windows Server, or Ubuntu Server 24.04 LTS / Linux Mint 22.x / Debian 12
 - PowerShell 5.1+ on Windows; systemd on Linux
 - Administrator/root access for installation/service management
 - Network access to the NodeVyu server
