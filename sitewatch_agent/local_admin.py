@@ -65,7 +65,8 @@ label{display:block;font-size:12px;color:var(--muted);font-weight:700}input,sele
 <section class="card"><h2>Connectivity</h2><div id="connectivity" class="grid"></div><div class="actions" style="margin-top:12px"><button class="secondary" onclick="loadConnectivity()">Run Connectivity Test</button></div></section>
 
 <section class="card"><h2>AI Detection <span class="pill warn">Beta</span></h2><div id="aiStatus" class="grid"></div>
-<div class="actions" style="margin-top:12px"><select id="aiCamera" style="max-width:360px"></select><button class="secondary" onclick="runAiTest()">Test Camera</button></div>
+<div class="actions" style="margin-top:12px"><select id="aiCamera" style="max-width:360px"></select><button class="secondary" onclick="runAiTest()">Test Camera</button><select id="aiLiveFps" style="max-width:120px"><option value="0.5">0.5 AI FPS</option><option value="1" selected>1 AI FPS</option><option value="2">2 AI FPS</option></select><button onclick="startLiveAi()">Start Live AI</button><button class="secondary" onclick="stopLiveAi()">Stop Live AI</button></div>
+<div id="aiLive" style="display:none;margin-top:14px;padding-top:14px;border-top:1px solid var(--line)"><div id="aiLiveStats" class="grid"></div><div style="margin-top:12px"><img id="aiLiveFrame" alt="Live AI annotated frame" style="max-width:100%;width:960px;border-radius:10px;border:1px solid var(--line)"></div></div>
 <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
 <label style="margin-bottom:8px">Upload image for testing<input id="aiUpload" type="file" accept=".jpg,.jpeg,.png,.webp,.bmp,image/jpeg,image/png,image/webp,image/bmp"></label>
 <div class="actions"><button class="secondary" onclick="runAiUpload()">Check Uploaded Image</button></div>
@@ -94,13 +95,19 @@ function renderAiResult(r){let title=r.cameraName||r.sourceName||"AI test";let h
 async function runAiTest(){const cameraId=$("aiCamera").value;if(!cameraId)return;try{$("aiTest").innerHTML='<div class="notice">Capturing frame, running inference, and recording evidence clip…</div>';renderAiResult(await j("/api/ai-test",{method:"POST",body:JSON.stringify({cameraId})}))}catch(e){$("aiTest").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function runAiUpload(){const file=$("aiUpload").files[0];if(!file){$("aiTest").innerHTML='<div class="notice">Choose an image first.</div>';return}if(file.size>20*1024*1024){$("aiTest").innerHTML='<div class="notice">Image exceeds 20 MB.</div>';return}try{$("aiTest").innerHTML='<div class="notice">Reading uploaded image and running both AI models…</div>';const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result||"").split(",")[1]||"");reader.onerror=()=>reject(new Error("Unable to read image"));reader.readAsDataURL(file)});renderAiResult(await j("/api/ai-image-test",{method:"POST",body:JSON.stringify({fileName:file.name,imageBase64:data})}))}catch(e){$("aiTest").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function runAiLocalFile(){const path=$("aiLocalPath").value.trim();if(!path){$("aiTest").innerHTML='<div class="notice">Enter an image path on this agent.</div>';return}try{$("aiTest").innerHTML='<div class="notice">Loading local image and running both AI models…</div>';renderAiResult(await j("/api/ai-image-test",{method:"POST",body:JSON.stringify({localPath:path})}))}catch(e){$("aiTest").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
+let aiLiveTimer=null;
+function stopLivePolling(){if(aiLiveTimer){clearInterval(aiLiveTimer);aiLiveTimer=null}}
+async function pollLiveAi(){try{const s=await j("/api/ai-live/status");if(!s.sessionId){$("aiLive").style.display="none";stopLivePolling();return}$("aiLive").style.display="block";const det=(s.detections||[]).map(d=>d.label+" "+(Number(d.confidence||0)*100).toFixed(1)+"%").join(", ")||"None";$("aiLiveStats").innerHTML=metric("State",s.running?"Running":(s.error?"Error":"Stopped"),s.error?"bad":(s.running?"good":"warn"))+metric("Target AI FPS",Number(s.aiFpsTarget||0).toFixed(1))+metric("Effective AI FPS",Number(s.effectiveAiFps||0).toFixed(2))+metric("Frames processed",s.framesProcessed||0)+metric("General inference",Number(s.generalInferenceMs||0).toFixed(1)+" ms")+metric("Wildlife inference",Number(s.wildlifeInferenceMs||0).toFixed(1)+" ms")+metric("Total inference",Number(s.totalInferenceMs||0).toFixed(1)+" ms")+metric("Detections",det)+(s.error?metric("Error",s.error,"bad"):"");if(s.hasFrame)$("aiLiveFrame").src="/api/ai-live/frame?t="+Date.now()}catch(e){$("aiLiveStats").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
+async function startLiveAi(){const cameraId=$("aiCamera").value;if(!cameraId)return;try{$("aiLive").style.display="block";$("aiLiveStats").innerHTML=metric("State","Starting…");await j("/api/ai-live/start",{method:"POST",body:JSON.stringify({cameraId,aiFps:Number($("aiLiveFps").value||1)})});stopLivePolling();await pollLiveAi();aiLiveTimer=setInterval(pollLiveAi,500)}catch(e){$("aiLiveStats").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
+async function stopLiveAi(){try{await j("/api/ai-live/stop",{method:"POST",body:"{}"});stopLivePolling();$("aiLive").style.display="none"}catch(e){$("aiLiveStats").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
+window.addEventListener("beforeunload",()=>{if(aiLiveTimer)navigator.sendBeacon("/api/ai-live/stop",new Blob(["{}"],{type:"application/json"}))});
 async function loadRemote(){try{const r=await j("/api/remote-access");let h='<div class="grid">';if(r.platform==="linux"){h+=metric("OpenSSH",r.status.installed?"Installed":"Not installed",r.status.installed?"good":"warn")+metric("ssh.service",r.status.serviceStatus,r.status.ready?"good":"warn")+metric("Port 22",r.status.listening?"Listening":"Not listening",r.status.listening?"good":"warn");h+='</div><div class="actions" style="margin-top:12px"><button onclick="action(\'ssh_install\')">Install & Enable SSH</button><button class="secondary" onclick="action(\'ssh_repair\')">Repair SSH</button><button class="secondary" onclick="action(\'ssh_restart\')">Restart SSH</button>'}else{h+=metric("TightVNC",r.status.installed?"Installed":"Not installed",r.status.installed?"good":"warn")+metric("Service",r.status.serviceStatus||"Unknown",r.status.ready?"good":"warn")+metric("Port 5900",r.status.listening?"Listening":"Not listening",r.status.listening?"good":"warn");h+='</div><div class="actions" style="margin-top:12px"><button onclick="action(\'vnc_install\')">Install TightVNC</button><button class="secondary" onclick="action(\'vnc_restart\')">Restart TightVNC</button><button class="danger" onclick="action(\'vnc_uninstall\')">Uninstall TightVNC</button>'}h+='<button class="secondary" onclick="loadRemote()">Refresh Status</button></div>';$("remoteAccess").innerHTML=h}catch(e){$("remoteAccess").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function action(name){if(name==="vnc_uninstall"&&!confirm("Uninstall TightVNC?"))return;try{$("actionMessage").innerHTML='<div class="notice">Working…</div>';const r=await j("/api/action",{method:"POST",body:JSON.stringify({action:name})});$("actionMessage").innerHTML='<div class="notice">'+esc(r.message||"Action completed.")+'</div>';setTimeout(()=>{loadStatus();loadRemote()},1200)}catch(e){$("actionMessage").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function loadLogs(){const b=await j("/api/logs");$("logFile").innerHTML=b.files.map(x=>'<option value="'+esc(x.name)+'">'+esc(x.name)+" — "+esc(x.size)+" bytes</option>").join("");if(b.files.length)loadLog();else $("logOutput").textContent="No log files found."}
 async function loadLog(){const name=$("logFile").value;if(!name)return;try{const b=await j("/api/log?name="+encodeURIComponent(name)+"&lines="+encodeURIComponent($("logLines").value));$("logOutput").textContent=b.content||"";$("logOutput").scrollTop=$("logOutput").scrollHeight}catch(e){$("logOutput").textContent=e.message}}
 async function loadConfig(){const b=await j("/api/config");$("config").innerHTML=Object.entries(b.values).map(([k,v])=>'<label>'+esc(k)+'<input data-key="'+esc(k)+'" value="'+esc(v)+'"></label>').join("")}
 async function saveConfig(){try{const values={};document.querySelectorAll("#config input[data-key]").forEach(x=>values[x.dataset.key]=x.value);const r=await j("/api/config",{method:"POST",body:JSON.stringify({values})});$("configMessage").innerHTML='<div class="notice">'+esc(r.message)+'</div>'}catch(e){$("configMessage").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
-async function loadAll(){await Promise.all([loadStatus(),loadConnectivity(),loadAi(),loadRemote(),loadLogs(),loadConfig()])}
+async function loadAll(){await Promise.all([loadStatus(),loadConnectivity(),loadAi(),loadRemote(),loadLogs(),loadConfig()]);try{const s=await j("/api/ai-live/status");if(s.sessionId){stopLivePolling();await pollLiveAi();aiLiveTimer=setInterval(pollLiveAi,1000)}}catch(e){}}
 loadAll();
 </script></body></html>"""
 
@@ -729,6 +736,21 @@ class LocalAdminHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(data)
                 return
+            if url.path == "/api/ai-live/status":
+                from .live_ai import live_ai_status
+                return self._json(live_ai_status())
+            if url.path == "/api/ai-live/frame":
+                from .live_ai import live_ai_frame
+                data = live_ai_frame()
+                if not data:
+                    return self._json({"error": "Live AI frame not ready"}, 404)
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+                return
             if url.path == "/api/remote-access":
                 return self._json(_remote_access_status())
             if url.path == "/api/logs":
@@ -767,6 +789,24 @@ class LocalAdminHandler(BaseHTTPRequestHandler):
             body = self._body(30 * 1024 * 1024 if url.path == "/api/ai-image-test" else 1_000_000)
             if url.path == "/api/action":
                 return self._json({"ok": True, "message": _run_action(str(body.get("action") or ""))})
+            if url.path == "/api/ai-live/start":
+                from .beta_features import resolve_ai_detection_beta
+                from .live_ai import start_live_ai
+                config = _agent_config()
+                enabled, source = resolve_ai_detection_beta(config)
+                if not enabled:
+                    raise ValueError(f"AI Detection beta is disabled (source={source}).")
+                camera_id = str(body.get("cameraId") or "")
+                device = next((item for item in config.get("devices", []) if str(item.get("id")) == camera_id), None)
+                if not device or device.get("type") != "camera":
+                    raise ValueError("Camera was not found in this agent configuration.")
+                if not any(check.get("type") == "rtsp" for check in device.get("checks", [])):
+                    raise ValueError("Camera does not have an RTSP check.")
+                ai_fps = float(body.get("aiFps") or 1)
+                return self._json(start_live_ai(device, ai_fps))
+            if url.path == "/api/ai-live/stop":
+                from .live_ai import stop_live_ai
+                return self._json(stop_live_ai())
             if url.path == "/api/ai-test":
                 return self._json(_run_ai_test(str(body.get("cameraId") or "")))
             if url.path == "/api/ai-image-test":
