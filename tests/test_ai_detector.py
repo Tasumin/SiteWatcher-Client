@@ -1,7 +1,7 @@
 import numpy as np
 from PIL import Image
 
-from sitewatch_agent.ai_detector import _decode_rows, _letterbox, _nms, _normalize_output
+from sitewatch_agent.ai_detector import _decode_rows, _decode_yolox_rows, _letterbox, _nms, _normalize_output, _prepare_image
 
 
 def test_normalize_ultralytics_feature_first_output():
@@ -43,3 +43,23 @@ def test_letterbox_preserves_aspect_ratio():
 
 
 import pytest
+
+
+def test_yolox_preprocess_uses_top_left_padding_and_raw_range():
+    image = Image.new("RGB", (1280, 720), (255, 0, 0))
+    tensor, scale, pad_x, pad_y = _prepare_image(image, 416, 416, "yolox")
+    assert tensor.shape == (1, 3, 416, 416)
+    assert pad_x == 0
+    assert pad_y == 0
+    assert scale == pytest.approx(416 / 1280)
+    assert tensor.max() == 255.0
+
+
+def test_yolox_decode_expands_grid_coordinates():
+    rows = np.zeros((3549, 85), dtype=np.float32)
+    rows[0, 0:4] = [0.5, 0.5, 0.0, 0.0]
+    decoded = _decode_yolox_rows(rows, 416, 416)
+    assert decoded[0, 0] == pytest.approx(4.0)
+    assert decoded[0, 1] == pytest.approx(4.0)
+    assert decoded[0, 2] == pytest.approx(8.0)
+    assert decoded[0, 3] == pytest.approx(8.0)
