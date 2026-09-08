@@ -247,3 +247,51 @@ def capture_snapshot(device: dict):
             width, height = info; return {"jpeg": jpeg, "width": width, "height": height}
         errors.append(f"attempt {attempt}: {info}"); time.sleep(1)
     raise RuntimeError("Snapshot validation failed; " + " | ".join(errors))
+
+
+def capture_clip(device: dict, duration_seconds: int = 4):
+    """Capture a short browser-compatible MP4 clip from a camera RTSP stream."""
+    if device.get("type") != "camera":
+        return None
+    rtsp_check = next((c for c in device.get("checks", []) if c.get("type") == "rtsp"), None)
+    if not rtsp_check:
+        return None
+    host = device["host"]
+    timeout = int(device.get("timeoutSeconds", 8))
+    url = rtsp_check.get("url") or f"rtsp://{host}:554/"
+    target = _rtsp_with_credentials(url, rtsp_check.get("username"), rtsp_check.get("password"))
+    duration = max(2, min(10, int(duration_seconds)))
+    cmd = [
+        _tool("ffmpeg"), "-hide_banner", "-loglevel", "error",
+        "-rtsp_transport", "tcp",
+        "-timeout", str(timeout * 1_000_000),
+        "-i", target,
+        "-t", str(duration),
+        "-an",
+        "-vf", "fps=8,scale=960:-2:force_original_aspect_ratio=decrease",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "28",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        "-f", "mp4",
+        "pipe:1",
+    ]
+    try:
+        process = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=max(timeout + duration + 10, 20),
+            creationflags=CREATE_FLAGS,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"AI evidence clip capture failed: {exc}") from exc
+    if process.returncode != 0:
+        stderr = process.stderr.decode("utf-8", errors="ignore").strip()
+        raise RuntimeError(f"AI evidence clip capture failed: {stderr[-700:] or 'FFmpeg failed'}")
+    data = process.stdout
+    if len(data) < 10_000:
+        raise RuntimeError("AI evidence clip is empty or unexpectedly small")
+    if len(data) > 20 * 1024 * 1024:
+        raise RuntimeError(f"AI evidence clip is too large ({len(data)} bytes)")
+    return {"mp4": data, "durationSeconds": duration}
