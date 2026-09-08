@@ -545,8 +545,27 @@ class LocalAdminHandler(BaseHTTPRequestHandler):
                     return self._json({"error": "Evidence not found"}, 404)
                 data = path.read_bytes()
                 content_type = "video/mp4" if path.suffix.lower() == ".mp4" else "image/jpeg"
+                range_header = self.headers.get("Range") if content_type == "video/mp4" else None
+                if range_header and range_header.startswith("bytes="):
+                    start_text, end_text = range_header[6:].split("-", 1)
+                    start = int(start_text or 0)
+                    end = int(end_text) if end_text else len(data) - 1
+                    start = max(0, min(start, len(data) - 1))
+                    end = max(start, min(end, len(data) - 1))
+                    chunk = data[start:end + 1]
+                    self.send_response(206)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
+                    self.send_header("Content-Length", str(len(chunk)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(chunk)
+                    return
                 self.send_response(200)
                 self.send_header("Content-Type", content_type)
+                if content_type == "video/mp4":
+                    self.send_header("Accept-Ranges", "bytes")
                 self.send_header("Content-Length", str(len(data)))
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
