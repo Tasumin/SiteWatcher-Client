@@ -171,7 +171,6 @@ try {
     }
     $localAdminDefaults=@{
         'SITEWATCH_LOCAL_ADMIN_ENABLED'='true'
-        'SITEWATCH_LOCAL_ADMIN_BIND'='127.0.0.1'
         'SITEWATCH_LOCAL_ADMIN_PORT'='8765'
         'SITEWATCH_LOCAL_ADMIN_LAN_ACCESS'='false'
     }
