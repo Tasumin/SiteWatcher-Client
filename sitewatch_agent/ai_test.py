@@ -11,7 +11,7 @@ from pathlib import Path
 import requests
 from PIL import Image
 
-from .ai_detector import OnnxObjectDetector, configured_model_path
+from .ai_detector import DEFAULT_DETECTION_CLASSES, OnnxObjectDetector, configured_model_path
 from .beta_features import resolve_ai_detection_beta
 from .checks import capture_snapshot
 from .service_entry import load_env
@@ -78,7 +78,7 @@ def main() -> None:
     parser.add_argument("--confidence", type=float, default=0.55)
     parser.add_argument("--iou", type=float, default=0.45)
     parser.add_argument("--runs", type=int, default=5)
-    parser.add_argument("--classes", default="person,car,truck,bus,motorcycle,bicycle", help="Comma-separated labels; blank means all")
+    parser.add_argument("--classes", default=",".join(DEFAULT_DETECTION_CLASSES), help="Comma-separated labels; blank means all")
     parser.add_argument("--json", action="store_true", help="Print final result as JSON")
     args = parser.parse_args()
 
