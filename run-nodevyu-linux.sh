@@ -18,7 +18,7 @@ case "$ACTION" in
   upgrade)
     TMP="$(mktemp /tmp/install-nodevyu-linux.XXXXXX.sh)"
     trap 'rm -f "$TMP"' EXIT
-    curl -fsSL "https://raw.githubusercontent.com/Tasumin/SiteWatcher-Client/main/install-nodevyu-linux.sh" -o "$TMP"
+    curl -fsSL "https://nodevyu.com/downloads/nodevyu-agent?platform=linux" -o "$TMP"
     bash "$TMP" --install-path "$INSTALL_PATH"
     exit 0 ;;
 esac
