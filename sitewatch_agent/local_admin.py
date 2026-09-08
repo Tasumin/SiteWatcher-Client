@@ -32,6 +32,9 @@ SAFE_CONFIG_KEYS = {
     "SITEWATCH_LOCAL_ADMIN_ENABLED",
     "SITEWATCH_LOCAL_ADMIN_PORT",
     "SITEWATCH_LOCAL_ADMIN_LAN_ACCESS",
+    "SITEWATCH_BETA_AI_DETECTION",
+    "SITEWATCH_AI_MODEL_PATH",
+    "SITEWATCH_AI_LABELS_PATH",
 }
 SECRET_KEYS = {"SITEWATCH_AGENT_TOKEN"}
 
@@ -60,6 +63,8 @@ label{display:block;font-size:12px;color:var(--muted);font-weight:700}input,sele
 
 <section class="card"><h2>Connectivity</h2><div id="connectivity" class="grid"></div><div class="actions" style="margin-top:12px"><button class="secondary" onclick="loadConnectivity()">Run Connectivity Test</button></div></section>
 
+<section class="card"><h2>AI Detection <span class="pill warn">Beta</span></h2><div id="aiStatus" class="grid"></div><div class="actions" style="margin-top:12px"><select id="aiCamera" style="max-width:360px"></select><button class="secondary" onclick="runAiTest()">Run One-Frame Test</button></div><div id="aiTest"></div><p class="muted" style="margin-top:10px">AI testing is local to this agent. A test captures one RTSP frame and does not create a NodeVyu event.</p></section>
+
 <section class="card"><h2>Remote Access</h2><div id="remoteAccess"></div></section>
 
 <section class="card"><h2>Logs</h2><div class="actions"><select id="logFile" style="max-width:340px" onchange="loadLog()"></select><select id="logLines" style="max-width:140px" onchange="loadLog()"><option>100</option><option selected>250</option><option>500</option><option>1000</option></select><button class="secondary" onclick="loadLog()">Refresh Log</button><a class="button secondary" href="/api/log-bundle">Download Bundle</a></div><pre id="logOutput">Loading logs…</pre></section>
@@ -73,13 +78,15 @@ async function j(path,opts={}){const r=await fetch(path,{cache:"no-store",header
 function metric(label,value,klass=""){return '<div class="metric"><span>'+esc(label)+'</span><b class="'+klass+'">'+esc(value)+'</b></div>'}
 async function loadStatus(){try{const s=await j("/api/status");$("platform").textContent=s.platform.system+" "+s.platform.release;$("status").innerHTML=metric("Version",s.version)+metric("Hostname",s.hostname)+metric("Agent service",s.service.status,s.service.running?"good":"bad")+metric("PID",s.pid)+metric("Process uptime",s.uptime)+metric("Server",s.serverUrl)+metric("Local UI",s.localAdminUrl)}catch(e){$("status").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function loadConnectivity(){try{$("connectivity").innerHTML=metric("Status","Testing…");const c=await j("/api/connectivity");$("connectivity").innerHTML=metric("DNS",c.dns.ok?c.dns.addresses.join(", "):c.dns.error,c.dns.ok?"good":"bad")+metric("TCP "+c.tcp.port,c.tcp.ok?"Connected":c.tcp.error,c.tcp.ok?"good":"bad")+metric("NodeVyu API",c.api.ok?"Authenticated":c.api.error,c.api.ok?"good":"bad")}catch(e){$("connectivity").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
+async function loadAi(){try{const p=await j("/api/ai"),cams=await j("/api/ai-cameras");const r=p.runtime||{},m=p.model||{};$("aiStatus").innerHTML=metric("Beta opt-in",p.enabled?"Enabled":"Disabled",p.enabled?"good":"warn")+metric("ONNX Runtime",r.installed?("v"+(r.version||"unknown")):"Not installed",r.ready?"good":"warn")+metric("Provider",r.preferredProvider||"None",r.ready?"good":"warn")+metric("Available providers",(r.providers||[]).join(", ")||"None")+metric("Detection model",m.present?"Ready":"Not installed",m.present?"good":"warn")+metric("Model path",m.path||"Not configured");$("aiCamera").innerHTML=(cams.cameras||[]).map(x=>'<option value="'+esc(x.id)+'">'+esc(x.name)+'</option>').join("")||'<option value="">No standalone RTSP cameras assigned</option>'}catch(e){$("aiStatus").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
+async function runAiTest(){const cameraId=$("aiCamera").value;if(!cameraId)return;try{$("aiTest").innerHTML='<div class="notice">Capturing frame and running inference…</div>';const r=await j("/api/ai-test",{method:"POST",body:JSON.stringify({cameraId})});let h='<div class="notice"><b>'+esc(r.cameraName)+'</b> • '+esc(r.provider)+' • '+Number(r.metrics.totalMs||0).toFixed(1)+' ms total • '+Number(r.metrics.inferenceMs||0).toFixed(1)+' ms inference';if((r.detections||[]).length){h+='<div style="margin-top:8">'+r.detections.map(d=>esc(d.label)+' '+(Number(d.confidence||0)*100).toFixed(1)+'%').join('<br>')+'</div>'}else h+='<div style="margin-top:8">No matching detections.</div>';h+='</div>';$("aiTest").innerHTML=h}catch(e){$("aiTest").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function loadRemote(){try{const r=await j("/api/remote-access");let h='<div class="grid">';if(r.platform==="linux"){h+=metric("OpenSSH",r.status.installed?"Installed":"Not installed",r.status.installed?"good":"warn")+metric("ssh.service",r.status.serviceStatus,r.status.ready?"good":"warn")+metric("Port 22",r.status.listening?"Listening":"Not listening",r.status.listening?"good":"warn");h+='</div><div class="actions" style="margin-top:12px"><button onclick="action(\'ssh_install\')">Install & Enable SSH</button><button class="secondary" onclick="action(\'ssh_repair\')">Repair SSH</button><button class="secondary" onclick="action(\'ssh_restart\')">Restart SSH</button>'}else{h+=metric("TightVNC",r.status.installed?"Installed":"Not installed",r.status.installed?"good":"warn")+metric("Service",r.status.serviceStatus||"Unknown",r.status.ready?"good":"warn")+metric("Port 5900",r.status.listening?"Listening":"Not listening",r.status.listening?"good":"warn");h+='</div><div class="actions" style="margin-top:12px"><button onclick="action(\'vnc_install\')">Install TightVNC</button><button class="secondary" onclick="action(\'vnc_restart\')">Restart TightVNC</button><button class="danger" onclick="action(\'vnc_uninstall\')">Uninstall TightVNC</button>'}h+='<button class="secondary" onclick="loadRemote()">Refresh Status</button></div>';$("remoteAccess").innerHTML=h}catch(e){$("remoteAccess").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function action(name){if(name==="vnc_uninstall"&&!confirm("Uninstall TightVNC?"))return;try{$("actionMessage").innerHTML='<div class="notice">Working…</div>';const r=await j("/api/action",{method:"POST",body:JSON.stringify({action:name})});$("actionMessage").innerHTML='<div class="notice">'+esc(r.message||"Action completed.")+'</div>';setTimeout(()=>{loadStatus();loadRemote()},1200)}catch(e){$("actionMessage").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function loadLogs(){const b=await j("/api/logs");$("logFile").innerHTML=b.files.map(x=>'<option value="'+esc(x.name)+'">'+esc(x.name)+" — "+esc(x.size)+" bytes</option>").join("");if(b.files.length)loadLog();else $("logOutput").textContent="No log files found."}
 async function loadLog(){const name=$("logFile").value;if(!name)return;try{const b=await j("/api/log?name="+encodeURIComponent(name)+"&lines="+encodeURIComponent($("logLines").value));$("logOutput").textContent=b.content||"";$("logOutput").scrollTop=$("logOutput").scrollHeight}catch(e){$("logOutput").textContent=e.message}}
 async function loadConfig(){const b=await j("/api/config");$("config").innerHTML=Object.entries(b.values).map(([k,v])=>'<label>'+esc(k)+'<input data-key="'+esc(k)+'" value="'+esc(v)+'"></label>').join("")}
 async function saveConfig(){try{const values={};document.querySelectorAll("#config input[data-key]").forEach(x=>values[x.dataset.key]=x.value);const r=await j("/api/config",{method:"POST",body:JSON.stringify({values})});$("configMessage").innerHTML='<div class="notice">'+esc(r.message)+'</div>'}catch(e){$("configMessage").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
-async function loadAll(){await Promise.all([loadStatus(),loadConnectivity(),loadRemote(),loadLogs(),loadConfig()])}
+async function loadAll(){await Promise.all([loadStatus(),loadConnectivity(),loadAi(),loadRemote(),loadLogs(),loadConfig()])}
 loadAll();
 </script></body></html>"""
 
@@ -150,6 +157,20 @@ def _status() -> dict:
     }
 
 
+def _agent_config() -> dict:
+    server = os.getenv("SITEWATCH_SERVER_URL", "").rstrip("/")
+    token = os.getenv("SITEWATCH_AGENT_TOKEN", "")
+    if not server or not token:
+        return {}
+    response = requests.get(
+        server + "/api/agent/config",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
 def _connectivity() -> dict:
     server = os.getenv("SITEWATCH_SERVER_URL", "").rstrip("/")
     parsed = urllib.parse.urlparse(server)
@@ -192,6 +213,61 @@ def _log_files() -> list[dict]:
         except OSError:
             pass
     return sorted(rows, key=lambda row: row["modified"], reverse=True)
+
+
+def _ai_cameras() -> list[dict]:
+    config = _agent_config()
+    cameras = []
+    for device in config.get("devices", []):
+        if device.get("type") != "camera":
+            continue
+        if not any(check.get("type") == "rtsp" for check in device.get("checks", [])):
+            continue
+        cameras.append({"id": str(device.get("id")), "name": str(device.get("name") or device.get("id"))})
+    return cameras
+
+
+def _run_ai_test(camera_id: str) -> dict:
+    import io
+    from PIL import Image
+    from .ai_detector import OnnxObjectDetector
+    from .beta_features import resolve_ai_detection_beta
+    from .checks import capture_snapshot
+
+    config = _agent_config()
+    enabled, source = resolve_ai_detection_beta(config)
+    if not enabled:
+        raise ValueError(f"AI Detection beta is disabled (source={source}).")
+
+    device = next((item for item in config.get("devices", []) if str(item.get("id")) == str(camera_id)), None)
+    if not device or device.get("type") != "camera":
+        raise ValueError("Camera was not found in this agent configuration.")
+    if not any(check.get("type") == "rtsp" for check in device.get("checks", [])):
+        raise ValueError("Camera does not have an RTSP check.")
+
+    snapshot = capture_snapshot(device)
+    if not snapshot:
+        raise RuntimeError("Camera did not return a snapshot.")
+    with Image.open(io.BytesIO(snapshot["jpeg"])) as source:
+        source.load()
+        image = source.convert("RGB")
+
+    detector = OnnxObjectDetector()
+    detections, metrics = detector.detect(
+        image,
+        confidence_threshold=0.55,
+        iou_threshold=0.45,
+        class_filter=["person", "car", "truck", "bus", "motorcycle", "bicycle"],
+    )
+    return {
+        "cameraId": str(device.get("id")),
+        "cameraName": str(device.get("name") or device.get("id")),
+        "provider": detector.provider,
+        "sourceWidth": image.width,
+        "sourceHeight": image.height,
+        "metrics": metrics,
+        "detections": [item.as_dict() for item in detections],
+    }
 
 
 def _remote_access_status() -> dict:
@@ -275,6 +351,9 @@ def _safe_config_values() -> dict[str, str]:
         "SITEWATCH_LOCAL_ADMIN_ENABLED": "true",
         "SITEWATCH_LOCAL_ADMIN_PORT": "8765",
         "SITEWATCH_LOCAL_ADMIN_LAN_ACCESS": "false",
+        "SITEWATCH_BETA_AI_DETECTION": "false",
+        "SITEWATCH_AI_MODEL_PATH": "",
+        "SITEWATCH_AI_LABELS_PATH": "",
     }
     return {key: current.get(key, os.getenv(key, default)) for key, default in defaults.items()}
 
@@ -343,6 +422,16 @@ class LocalAdminHandler(BaseHTTPRequestHandler):
                 return self._json(_status())
             if url.path == "/api/connectivity":
                 return self._json(_connectivity())
+            if url.path == "/api/ai":
+                from .beta_features import plugin_capabilities
+                try:
+                    agent_config = _agent_config()
+                except Exception:
+                    agent_config = {}
+                plugin = plugin_capabilities(agent_config).get("plugins", [{}])[0]
+                return self._json(plugin)
+            if url.path == "/api/ai-cameras":
+                return self._json({"cameras": _ai_cameras()})
             if url.path == "/api/remote-access":
                 return self._json(_remote_access_status())
             if url.path == "/api/logs":
@@ -381,6 +470,8 @@ class LocalAdminHandler(BaseHTTPRequestHandler):
             body = self._body()
             if url.path == "/api/action":
                 return self._json({"ok": True, "message": _run_action(str(body.get("action") or ""))})
+            if url.path == "/api/ai-test":
+                return self._json(_run_ai_test(str(body.get("cameraId") or "")))
             if url.path == "/api/config":
                 values = body.get("values") if isinstance(body.get("values"), dict) else {}
                 _write_safe_config(values)
