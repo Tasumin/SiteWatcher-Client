@@ -658,11 +658,13 @@ class LocalAdminHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _body(self) -> dict:
-        length = min(1_000_000, int(self.headers.get("Content-Length", "0") or "0"))
-        if not length:
+    def _body(self, max_bytes: int = 1_000_000) -> dict:
+        declared = int(self.headers.get("Content-Length", "0") or "0")
+        if declared <= 0:
             return {}
-        return json.loads(self.rfile.read(length).decode("utf-8"))
+        if declared > max_bytes:
+            raise ValueError(f"Request body exceeds {max_bytes // (1024 * 1024)} MB limit.")
+        return json.loads(self.rfile.read(declared).decode("utf-8"))
 
     def do_GET(self) -> None:
         url = urllib.parse.urlparse(self.path)
@@ -762,7 +764,7 @@ class LocalAdminHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         url = urllib.parse.urlparse(self.path)
         try:
-            body = self._body()
+            body = self._body(30 * 1024 * 1024 if url.path == "/api/ai-image-test" else 1_000_000)
             if url.path == "/api/action":
                 return self._json({"ok": True, "message": _run_action(str(body.get("action") or ""))})
             if url.path == "/api/ai-test":
