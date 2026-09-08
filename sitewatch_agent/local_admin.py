@@ -156,6 +156,20 @@ def _status() -> dict:
     }
 
 
+def _agent_config() -> dict:
+    server = os.getenv("SITEWATCH_SERVER_URL", "").rstrip("/")
+    token = os.getenv("SITEWATCH_AGENT_TOKEN", "")
+    if not server or not token:
+        return {}
+    response = requests.get(
+        server + "/api/agent/config",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
 def _connectivity() -> dict:
     server = os.getenv("SITEWATCH_SERVER_URL", "").rstrip("/")
     parsed = urllib.parse.urlparse(server)
@@ -354,7 +368,11 @@ class LocalAdminHandler(BaseHTTPRequestHandler):
                 return self._json(_connectivity())
             if url.path == "/api/ai":
                 from .beta_features import plugin_capabilities
-                plugin = plugin_capabilities().get("plugins", [{}])[0]
+                try:
+                    agent_config = _agent_config()
+                except Exception:
+                    agent_config = {}
+                plugin = plugin_capabilities(agent_config).get("plugins", [{}])[0]
                 return self._json(plugin)
             if url.path == "/api/remote-access":
                 return self._json(_remote_access_status())
