@@ -2,7 +2,7 @@
 
 Native Windows and Linux monitoring agent for **NodeVyu**.
 
-Current version: **1.2.2**
+Current version: **1.2.4**
 
 The Windows agent runs as a Windows service named **NodeVyuAgent** using WinSW. The Linux agent runs as a native **systemd** service named **nodevyu-agent**. Docker and WSL are not required.
 
@@ -89,7 +89,7 @@ The agent includes a lightweight local troubleshooting interface with no login p
 http://127.0.0.1:8765
 ```
 
-The interface exposes agent status, NodeVyu connectivity checks, logs and log bundles, safe configuration values, agent restart/update actions, Linux OpenSSH management, and Windows TightVNC management. Agent tokens and other secrets are never displayed.
+The interface exposes agent status, the installed and latest available agent versions, update availability, NodeVyu connectivity checks, logs and log bundles, safe configuration values, agent restart/update actions, Linux OpenSSH management, and Windows TightVNC management. Agent tokens and other secrets are never displayed.
 
 Default settings:
 
@@ -186,7 +186,7 @@ Python, required packages, WinSW and FFmpeg are handled by the native installer 
 
 ## AI Detection beta opt-in
 
-The agent advertises an optional **AI Detection** beta plugin capability. ONNX Runtime is installed with the agent and its available execution providers are reported to NodeVyu and the local admin UI. Camera inference/model processing is not started yet.
+The agent advertises an optional **AI Detection** beta plugin capability. ONNX Runtime is installed with the agent and its available execution providers are reported to NodeVyu and the local admin UI. When the beta is enabled, the agent automatically provisions the pinned NodeVyu YOLOX-Tiny COCO ONNX model, verifies its SHA-256 checksum, and stores it under the preserved agent data directory. Continuous camera inference is not started yet.
 
 Local opt-in is controlled with:
 
@@ -201,7 +201,7 @@ Supported server configuration shapes are `betaFeatures.aiDetection.enabled` and
 
 ### AI single-camera benchmark
 
-After enabling the beta and placing a compatible YOLO-style ONNX model at `models/ai-detection/model.onnx`, benchmark a standalone camera assigned to this agent:
+After enabling the beta, the managed model is downloaded automatically. Once the local/Web UI reports **Model ready**, benchmark a standalone camera assigned to this agent:
 
 ```bash
 python -m sitewatch_agent.ai_test --device-id CAMERA_UUID --runs 10
@@ -214,3 +214,18 @@ python -m sitewatch_agent.ai_test --image test.jpg --runs 10
 ```
 
 The benchmark uses the same Python detector code on Windows and Linux and reports preprocessing, inference, post-processing, total latency, estimated inference FPS, provider, and detections. No events are uploaded during this benchmark stage.
+
+
+### Managed AI model
+
+The beta model is provisioned automatically only after AI Detection is enabled. The initial pinned model is YOLOX-Tiny COCO `0.1.1rc0`, downloaded from the official YOLOX GitHub release and verified before use.
+
+The managed model is stored under the agent's preserved data directory:
+
+```text
+data/ai-models/yolox-tiny-coco-0.1.1rc0.onnx
+```
+
+A partial or checksum-invalid download is never promoted to the active model. The agent retries provisioning while the beta remains enabled.
+
+Setting `SITEWATCH_AI_MODEL_PATH` switches to a custom unmanaged model; NodeVyu will not overwrite or auto-download to that custom path.
