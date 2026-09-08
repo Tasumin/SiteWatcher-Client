@@ -503,44 +503,29 @@ def _run_ai_test(camera_id: str) -> dict:
         image = source.convert("RGB")
 
     result = _analyze_ai_image(image, str(device.get("name") or device.get("id")))
-    detections = [
-        type("_DetectionProxy", (), {
-            "label": item["label"],
-            "confidence": item["confidence"],
-            "x": item["box"]["x"],
-            "y": item["box"]["y"],
-            "width": item["box"]["width"],
-            "height": item["box"]["height"],
-        })()
-        for item in result["detections"]
-    ]
-
-    clip_data = None
     clip_error = None
-    if detections:
+    clip_url = None
+    if result["detections"]:
         try:
             clip = capture_clip(device, duration_seconds=4)
             clip_data = clip.get("mp4") if clip else None
+            if clip_data:
+                AI_EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
+                _cleanup_ai_evidence()
+                clip_name = f"{int(time.time())}-{os.getpid()}-{threading.get_ident()}.mp4"
+                (AI_EVIDENCE_DIR / clip_name).write_bytes(clip_data)
+                clip_url = f"/api/ai-evidence?name={urllib.parse.quote(clip_name)}"
         except Exception as exc:
             clip_error = str(exc)
             print(f"[ai] evidence clip failed camera={device.get('id')}: {clip_error}", flush=True)
 
-    preview_path = AI_EVIDENCE_DIR / Path(urllib.parse.urlparse(result["previewUrl"]).query.split("=",1)[1]).name
-    preview_jpeg = preview_path.read_bytes() if preview_path.is_file() else _annotated_preview(image, detections)
-    preview_name, clip_name = _save_ai_evidence(preview_jpeg, clip_data)
-    return {
+    result.update({
         "cameraId": str(device.get("id")),
         "cameraName": str(device.get("name") or device.get("id")),
-        "provider": detector.provider,
-        "wildlifeProvider": wildlife_provider,
-        "sourceWidth": image.width,
-        "sourceHeight": image.height,
-        "metrics": metrics,
-        "detections": [item.as_dict() for item in detections],
-        "previewUrl": f"/api/ai-evidence?name={urllib.parse.quote(preview_name)}",
-        "clipUrl": f"/api/ai-evidence?name={urllib.parse.quote(clip_name)}" if clip_name else None,
+        "clipUrl": clip_url,
         "clipError": clip_error,
-    }
+    })
+    return result
 
 
 def _remote_access_status() -> dict:
