@@ -64,7 +64,17 @@ label{display:block;font-size:12px;color:var(--muted);font-weight:700}input,sele
 
 <section class="card"><h2>Connectivity</h2><div id="connectivity" class="grid"></div><div class="actions" style="margin-top:12px"><button class="secondary" onclick="loadConnectivity()">Run Connectivity Test</button></div></section>
 
-<section class="card"><h2>AI Detection <span class="pill warn">Beta</span></h2><div id="aiStatus" class="grid"></div><div class="actions" style="margin-top:12px"><select id="aiCamera" style="max-width:360px"></select><button class="secondary" onclick="runAiTest()">Run Detection Test</button></div><div id="aiTest"></div><p class="muted" style="margin-top:10px">AI testing is local to this agent. General + wildlife models run on one frame; matching detections can produce a short evidence clip. Wildlife currently includes deer, rabbit, bear, fox, and coyote. Goat needs a compatible goat-trained model. Deer is reported as deer; buck/doe is not guessed without antler/sex evidence.</p></section>
+<section class="card"><h2>AI Detection <span class="pill warn">Beta</span></h2><div id="aiStatus" class="grid"></div>
+<div class="actions" style="margin-top:12px"><select id="aiCamera" style="max-width:360px"></select><button class="secondary" onclick="runAiTest()">Test Camera</button></div>
+<div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+<label style="margin-bottom:8px">Upload image for testing<input id="aiUpload" type="file" accept=".jpg,.jpeg,.png,.webp,.bmp,image/jpeg,image/png,image/webp,image/bmp"></label>
+<div class="actions"><button class="secondary" onclick="runAiUpload()">Check Uploaded Image</button></div>
+</div>
+<div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+<label>Image file already on this agent<input id="aiLocalPath" type="text" placeholder="/home/user/test.jpg or C:\\Temp\\test.jpg"></label>
+<div class="actions" style="margin-top:8px"><button class="secondary" onclick="runAiLocalFile()">Check Local File</button></div>
+</div>
+<div id="aiTest"></div><p class="muted" style="margin-top:10px">AI testing is local to this agent. Uploaded/local images run through both general + wildlife models. Camera tests can also create a short evidence clip when something is found. Supported local image types: JPG, PNG, WebP, BMP; max 20 MB.</p></section>
 
 <section class="card"><h2>Remote Access</h2><div id="remoteAccess"></div></section>
 
@@ -80,7 +90,10 @@ function metric(label,value,klass=""){return '<div class="metric"><span>'+esc(la
 async function loadStatus(){try{const s=await j("/api/status");$("platform").textContent=s.platform.system+" "+s.platform.release;$("status").innerHTML=metric("Installed version",s.version)+metric("Latest version",s.latestVersion||"Unknown",s.updateAvailable?"warn":"good")+metric("Update status",s.updateAvailable?"Update available":"Current",s.updateAvailable?"warn":"good")+metric("Hostname",s.hostname)+metric("Agent service",s.service.status,s.service.running?"good":"bad")+metric("PID",s.pid)+metric("Process uptime",s.uptime)+metric("Server",s.serverUrl)+metric("Local UI",s.localAdminUrl)}catch(e){$("status").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function loadConnectivity(){try{$("connectivity").innerHTML=metric("Status","Testing…");const c=await j("/api/connectivity");$("connectivity").innerHTML=metric("DNS",c.dns.ok?c.dns.addresses.join(", "):c.dns.error,c.dns.ok?"good":"bad")+metric("TCP "+c.tcp.port,c.tcp.ok?"Connected":c.tcp.error,c.tcp.ok?"good":"bad")+metric("NodeVyu API",c.api.ok?"Authenticated":c.api.error,c.api.ok?"good":"bad")}catch(e){$("connectivity").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function loadAi(){try{const p=await j("/api/ai"),cams=await j("/api/ai-cameras");const r=p.runtime||{},m=p.model||{},w=p.wildlifeModel||{};$("aiStatus").innerHTML=metric("Beta opt-in",p.enabled?"Enabled":"Disabled",p.enabled?"good":"warn")+metric("ONNX Runtime",r.installed?("v"+(r.version||"unknown")):"Not installed",r.ready?"good":"warn")+metric("Provider",r.preferredProvider||"None",r.ready?"good":"warn")+metric("Available providers",(r.providers||[]).join(", ")||"None")+metric("General model",m.present?"Ready":"Not installed",m.present?"good":"warn")+metric("Wildlife model",w.present?"Ready":"Not installed",w.present?"good":"warn")+metric("Wildlife version",w.version||"Pending");$("aiCamera").innerHTML=(cams.cameras||[]).map(x=>'<option value="'+esc(x.id)+'">'+esc(x.name)+'</option>').join("")||'<option value="">No standalone RTSP cameras assigned</option>'}catch(e){$("aiStatus").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
-async function runAiTest(){const cameraId=$("aiCamera").value;if(!cameraId)return;try{$("aiTest").innerHTML='<div class="notice">Capturing frame, running inference, and recording evidence clip…</div>';const r=await j("/api/ai-test",{method:"POST",body:JSON.stringify({cameraId})});let h='<div class="notice"><b>'+esc(r.cameraName)+'</b> • '+esc(r.provider)+' • '+Number(r.metrics.totalMs||0).toFixed(1)+' ms total • '+Number(r.metrics.inferenceMs||0).toFixed(1)+' ms inference';if((r.detections||[]).length){h+='<div style="margin-top:8">'+r.detections.map(d=>esc(d.label)+' '+(Number(d.confidence||0)*100).toFixed(1)+'%').join('<br>')+'</div>'}else h+='<div style="margin-top:8">No matching detections.</div>';if(r.previewUrl)h+='<div style="margin-top:12px"><b>Detection preview</b><br><img src="'+esc(r.previewUrl)+'" style="margin-top:8px;max-width:100%;border-radius:10px;border:1px solid var(--line)"></div>';if(r.clipUrl)h+='<div style="margin-top:12px"><b>Evidence clip</b><br><video controls preload="metadata" src="'+esc(r.clipUrl)+'" style="margin-top:8px;max-width:100%;width:720px;border-radius:10px;border:1px solid var(--line)"></video></div>';h+='</div>';$("aiTest").innerHTML=h}catch(e){$("aiTest").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
+function renderAiResult(r){let title=r.cameraName||r.sourceName||"AI test";let h='<div class="notice"><b>'+esc(title)+'</b> • '+esc(r.provider||"unknown provider")+' • '+Number(r.metrics?.totalMs||0).toFixed(1)+' ms total • '+Number(r.metrics?.inferenceMs||0).toFixed(1)+' ms inference';if((r.detections||[]).length){h+='<div style="margin-top:8">'+r.detections.map(d=>esc(d.label)+' '+(Number(d.confidence||0)*100).toFixed(1)+'%').join('<br>')+'</div>'}else h+='<div style="margin-top:8">No matching detections.</div>';if(r.previewUrl)h+='<div style="margin-top:12px"><b>Detection preview</b><br><img src="'+esc(r.previewUrl)+'" style="margin-top:8px;max-width:100%;border-radius:10px;border:1px solid var(--line)"></div>';if(r.clipUrl)h+='<div style="margin-top:12px"><b>Evidence clip</b><br><video controls preload="metadata" src="'+esc(r.clipUrl)+'" style="margin-top:8px;max-width:100%;width:720px;border-radius:10px;border:1px solid var(--line)"></video></div>';h+='</div>';$("aiTest").innerHTML=h}
+async function runAiTest(){const cameraId=$("aiCamera").value;if(!cameraId)return;try{$("aiTest").innerHTML='<div class="notice">Capturing frame, running inference, and recording evidence clip…</div>';renderAiResult(await j("/api/ai-test",{method:"POST",body:JSON.stringify({cameraId})}))}catch(e){$("aiTest").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
+async function runAiUpload(){const file=$("aiUpload").files[0];if(!file){$("aiTest").innerHTML='<div class="notice">Choose an image first.</div>';return}if(file.size>20*1024*1024){$("aiTest").innerHTML='<div class="notice">Image exceeds 20 MB.</div>';return}try{$("aiTest").innerHTML='<div class="notice">Reading uploaded image and running both AI models…</div>';const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result||"").split(",")[1]||"");reader.onerror=()=>reject(new Error("Unable to read image"));reader.readAsDataURL(file)});renderAiResult(await j("/api/ai-image-test",{method:"POST",body:JSON.stringify({fileName:file.name,imageBase64:data})}))}catch(e){$("aiTest").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
+async function runAiLocalFile(){const path=$("aiLocalPath").value.trim();if(!path){$("aiTest").innerHTML='<div class="notice">Enter an image path on this agent.</div>';return}try{$("aiTest").innerHTML='<div class="notice">Loading local image and running both AI models…</div>';renderAiResult(await j("/api/ai-image-test",{method:"POST",body:JSON.stringify({localPath:path})}))}catch(e){$("aiTest").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function loadRemote(){try{const r=await j("/api/remote-access");let h='<div class="grid">';if(r.platform==="linux"){h+=metric("OpenSSH",r.status.installed?"Installed":"Not installed",r.status.installed?"good":"warn")+metric("ssh.service",r.status.serviceStatus,r.status.ready?"good":"warn")+metric("Port 22",r.status.listening?"Listening":"Not listening",r.status.listening?"good":"warn");h+='</div><div class="actions" style="margin-top:12px"><button onclick="action(\'ssh_install\')">Install & Enable SSH</button><button class="secondary" onclick="action(\'ssh_repair\')">Repair SSH</button><button class="secondary" onclick="action(\'ssh_restart\')">Restart SSH</button>'}else{h+=metric("TightVNC",r.status.installed?"Installed":"Not installed",r.status.installed?"good":"warn")+metric("Service",r.status.serviceStatus||"Unknown",r.status.ready?"good":"warn")+metric("Port 5900",r.status.listening?"Listening":"Not listening",r.status.listening?"good":"warn");h+='</div><div class="actions" style="margin-top:12px"><button onclick="action(\'vnc_install\')">Install TightVNC</button><button class="secondary" onclick="action(\'vnc_restart\')">Restart TightVNC</button><button class="danger" onclick="action(\'vnc_uninstall\')">Uninstall TightVNC</button>'}h+='<button class="secondary" onclick="loadRemote()">Refresh Status</button></div>';$("remoteAccess").innerHTML=h}catch(e){$("remoteAccess").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function action(name){if(name==="vnc_uninstall"&&!confirm("Uninstall TightVNC?"))return;try{$("actionMessage").innerHTML='<div class="notice">Working…</div>';const r=await j("/api/action",{method:"POST",body:JSON.stringify({action:name})});$("actionMessage").innerHTML='<div class="notice">'+esc(r.message||"Action completed.")+'</div>';setTimeout(()=>{loadStatus();loadRemote()},1200)}catch(e){$("actionMessage").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function loadLogs(){const b=await j("/api/logs");$("logFile").innerHTML=b.files.map(x=>'<option value="'+esc(x.name)+'">'+esc(x.name)+" — "+esc(x.size)+" bytes</option>").join("");if(b.files.length)loadLog();else $("logOutput").textContent="No log files found."}
@@ -344,9 +357,58 @@ def _merge_ai_detections(general, wildlife):
     return merged
 
 
-def _run_ai_test(camera_id: str) -> dict:
+ALLOWED_AI_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+MAX_AI_IMAGE_BYTES = 20 * 1024 * 1024
+
+
+def _load_local_ai_image(path_text: str):
+    from PIL import Image
+
+    path = Path(path_text).expanduser()
+    if not path.is_absolute():
+        path = (ROOT / path).resolve()
+    else:
+        path = path.resolve()
+    if not path.is_file():
+        raise ValueError(f"Image file not found: {path}")
+    if path.suffix.lower() not in ALLOWED_AI_IMAGE_SUFFIXES:
+        raise ValueError("Unsupported image type. Use JPG, PNG, WebP, or BMP.")
+    size = path.stat().st_size
+    if size <= 0 or size > MAX_AI_IMAGE_BYTES:
+        raise ValueError("Image must be between 1 byte and 20 MB.")
+    with Image.open(path) as source:
+        source.verify()
+    with Image.open(path) as source:
+        source.load()
+        image = source.convert("RGB")
+    if image.width < 16 or image.height < 16 or image.width * image.height > 50_000_000:
+        raise ValueError("Image dimensions are unsupported.")
+    return image, str(path)
+
+
+def _load_uploaded_ai_image(file_name: str, image_base64: str):
+    import base64
     import io
     from PIL import Image
+
+    suffix = Path(file_name or "").suffix.lower()
+    if suffix not in ALLOWED_AI_IMAGE_SUFFIXES:
+        raise ValueError("Unsupported image type. Use JPG, PNG, WebP, or BMP.")
+    try:
+        data = base64.b64decode(image_base64, validate=True)
+    except Exception as exc:
+        raise ValueError("Uploaded image data is invalid.") from exc
+    if not data or len(data) > MAX_AI_IMAGE_BYTES:
+        raise ValueError("Uploaded image must be between 1 byte and 20 MB.")
+    with Image.open(io.BytesIO(data)) as source:
+        source.load()
+        image = source.convert("RGB")
+    if image.width < 16 or image.height < 16 or image.width * image.height > 50_000_000:
+        raise ValueError("Image dimensions are unsupported.")
+    return image, Path(file_name).name or "uploaded-image"
+
+
+def _analyze_ai_image(image, source_name: str) -> dict:
     from .ai_detector import (
         DEFAULT_DETECTION_CLASSES,
         WILDLIFE_SOURCE_LABELS,
@@ -355,26 +417,6 @@ def _run_ai_test(camera_id: str) -> dict:
         canonical_wildlife_label,
     )
     from .ai_model_manager import ensure_wildlife_model, wildlife_labels_path, wildlife_model_path
-    from .beta_features import resolve_ai_detection_beta
-    from .checks import capture_snapshot, capture_clip
-
-    config = _agent_config()
-    enabled, source = resolve_ai_detection_beta(config)
-    if not enabled:
-        raise ValueError(f"AI Detection beta is disabled (source={source}).")
-
-    device = next((item for item in config.get("devices", []) if str(item.get("id")) == str(camera_id)), None)
-    if not device or device.get("type") != "camera":
-        raise ValueError("Camera was not found in this agent configuration.")
-    if not any(check.get("type") == "rtsp" for check in device.get("checks", [])):
-        raise ValueError("Camera does not have an RTSP check.")
-
-    snapshot = capture_snapshot(device)
-    if not snapshot:
-        raise RuntimeError("Camera did not return a snapshot.")
-    with Image.open(io.BytesIO(snapshot["jpeg"])) as source:
-        source.load()
-        image = source.convert("RGB")
 
     detector = OnnxObjectDetector()
     general_detections, general_metrics = detector.detect(
@@ -422,8 +464,65 @@ def _run_ai_test(camera_id: str) -> dict:
         "generalInferenceMs": general_metrics["inferenceMs"],
         "wildlifeInferenceMs": wildlife_metrics["inferenceMs"],
     }
+    preview_name, _ = _save_ai_evidence(_annotated_preview(image, detections), None)
+    return {
+        "sourceName": source_name,
+        "provider": result["provider"],
+        "wildlifeProvider": result.get("wildlifeProvider"),
+        "sourceWidth": image.width,
+        "sourceHeight": image.height,
+        "metrics": result["metrics"],
+        "detections": result["detections"],
+        "previewUrl": f"/api/ai-evidence?name={urllib.parse.quote(preview_name)}",
+        "clipUrl": None,
+    }
 
-    preview_jpeg = _annotated_preview(image, detections)
+
+def _run_ai_test(camera_id: str) -> dict:
+    import io
+    from PIL import Image
+    from .ai_detector import (
+        DEFAULT_DETECTION_CLASSES,
+        WILDLIFE_SOURCE_LABELS,
+        Detection,
+        OnnxObjectDetector,
+        canonical_wildlife_label,
+    )
+    from .ai_model_manager import ensure_wildlife_model, wildlife_labels_path, wildlife_model_path
+    from .beta_features import resolve_ai_detection_beta
+    from .checks import capture_snapshot, capture_clip
+
+    config = _agent_config()
+    enabled, source = resolve_ai_detection_beta(config)
+    if not enabled:
+        raise ValueError(f"AI Detection beta is disabled (source={source}).")
+
+    device = next((item for item in config.get("devices", []) if str(item.get("id")) == str(camera_id)), None)
+    if not device or device.get("type") != "camera":
+        raise ValueError("Camera was not found in this agent configuration.")
+    if not any(check.get("type") == "rtsp" for check in device.get("checks", [])):
+        raise ValueError("Camera does not have an RTSP check.")
+
+    snapshot = capture_snapshot(device)
+    if not snapshot:
+        raise RuntimeError("Camera did not return a snapshot.")
+    with Image.open(io.BytesIO(snapshot["jpeg"])) as source:
+        source.load()
+        image = source.convert("RGB")
+
+    result = _analyze_ai_image(image, str(device.get("name") or device.get("id")))
+    detections = [
+        type("_DetectionProxy", (), {
+            "label": item["label"],
+            "confidence": item["confidence"],
+            "x": item["box"]["x"],
+            "y": item["box"]["y"],
+            "width": item["box"]["width"],
+            "height": item["box"]["height"],
+        })()
+        for item in result["detections"]
+    ]
+
     clip_data = None
     clip_error = None
     if detections:
@@ -434,6 +533,8 @@ def _run_ai_test(camera_id: str) -> dict:
             clip_error = str(exc)
             print(f"[ai] evidence clip failed camera={device.get('id')}: {clip_error}", flush=True)
 
+    preview_path = AI_EVIDENCE_DIR / Path(urllib.parse.urlparse(result["previewUrl"]).query.split("=",1)[1]).name
+    preview_jpeg = preview_path.read_bytes() if preview_path.is_file() else _annotated_preview(image, detections)
     preview_name, clip_name = _save_ai_evidence(preview_jpeg, clip_data)
     return {
         "cameraId": str(device.get("id")),
@@ -689,6 +790,20 @@ class LocalAdminHandler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "message": _run_action(str(body.get("action") or ""))})
             if url.path == "/api/ai-test":
                 return self._json(_run_ai_test(str(body.get("cameraId") or "")))
+            if url.path == "/api/ai-image-test":
+                from .beta_features import resolve_ai_detection_beta
+                config = _agent_config()
+                enabled, source = resolve_ai_detection_beta(config)
+                if not enabled:
+                    raise ValueError(f"AI Detection beta is disabled (source={source}).")
+                if str(body.get("localPath") or "").strip():
+                    image, source_name = _load_local_ai_image(str(body.get("localPath")))
+                else:
+                    image, source_name = _load_uploaded_ai_image(
+                        str(body.get("fileName") or ""),
+                        str(body.get("imageBase64") or ""),
+                    )
+                return self._json(_analyze_ai_image(image, source_name))
             if url.path == "/api/config":
                 values = body.get("values") if isinstance(body.get("values"), dict) else {}
                 _write_safe_config(values)
