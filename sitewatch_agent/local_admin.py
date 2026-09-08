@@ -32,6 +32,7 @@ SAFE_CONFIG_KEYS = {
     "SITEWATCH_LOCAL_ADMIN_ENABLED",
     "SITEWATCH_LOCAL_ADMIN_PORT",
     "SITEWATCH_LOCAL_ADMIN_LAN_ACCESS",
+    "SITEWATCH_BETA_AI_DETECTION",
 }
 SECRET_KEYS = {"SITEWATCH_AGENT_TOKEN"}
 
@@ -60,6 +61,8 @@ label{display:block;font-size:12px;color:var(--muted);font-weight:700}input,sele
 
 <section class="card"><h2>Connectivity</h2><div id="connectivity" class="grid"></div><div class="actions" style="margin-top:12px"><button class="secondary" onclick="loadConnectivity()">Run Connectivity Test</button></div></section>
 
+<section class="card"><h2>AI Detection <span class="pill warn">Beta</span></h2><div id="aiStatus" class="grid"></div><p class="muted" style="margin-top:10px">AI remains inactive unless the beta is enabled. Runtime readiness is reported here before camera inference is added.</p></section>
+
 <section class="card"><h2>Remote Access</h2><div id="remoteAccess"></div></section>
 
 <section class="card"><h2>Logs</h2><div class="actions"><select id="logFile" style="max-width:340px" onchange="loadLog()"></select><select id="logLines" style="max-width:140px" onchange="loadLog()"><option>100</option><option selected>250</option><option>500</option><option>1000</option></select><button class="secondary" onclick="loadLog()">Refresh Log</button><a class="button secondary" href="/api/log-bundle">Download Bundle</a></div><pre id="logOutput">Loading logs…</pre></section>
@@ -73,13 +76,14 @@ async function j(path,opts={}){const r=await fetch(path,{cache:"no-store",header
 function metric(label,value,klass=""){return '<div class="metric"><span>'+esc(label)+'</span><b class="'+klass+'">'+esc(value)+'</b></div>'}
 async function loadStatus(){try{const s=await j("/api/status");$("platform").textContent=s.platform.system+" "+s.platform.release;$("status").innerHTML=metric("Version",s.version)+metric("Hostname",s.hostname)+metric("Agent service",s.service.status,s.service.running?"good":"bad")+metric("PID",s.pid)+metric("Process uptime",s.uptime)+metric("Server",s.serverUrl)+metric("Local UI",s.localAdminUrl)}catch(e){$("status").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function loadConnectivity(){try{$("connectivity").innerHTML=metric("Status","Testing…");const c=await j("/api/connectivity");$("connectivity").innerHTML=metric("DNS",c.dns.ok?c.dns.addresses.join(", "):c.dns.error,c.dns.ok?"good":"bad")+metric("TCP "+c.tcp.port,c.tcp.ok?"Connected":c.tcp.error,c.tcp.ok?"good":"bad")+metric("NodeVyu API",c.api.ok?"Authenticated":c.api.error,c.api.ok?"good":"bad")}catch(e){$("connectivity").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
+async function loadAi(){try{const p=await j("/api/ai");const r=p.runtime||{};$("aiStatus").innerHTML=metric("Beta opt-in",p.enabled?"Enabled":"Disabled",p.enabled?"good":"warn")+metric("ONNX Runtime",r.installed?("v"+(r.version||"unknown")):"Not installed",r.ready?"good":"warn")+metric("Provider",r.preferredProvider||"None",r.ready?"good":"warn")+metric("Available providers",(r.providers||[]).join(", ")||"None")}catch(e){$("aiStatus").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function loadRemote(){try{const r=await j("/api/remote-access");let h='<div class="grid">';if(r.platform==="linux"){h+=metric("OpenSSH",r.status.installed?"Installed":"Not installed",r.status.installed?"good":"warn")+metric("ssh.service",r.status.serviceStatus,r.status.ready?"good":"warn")+metric("Port 22",r.status.listening?"Listening":"Not listening",r.status.listening?"good":"warn");h+='</div><div class="actions" style="margin-top:12px"><button onclick="action(\'ssh_install\')">Install & Enable SSH</button><button class="secondary" onclick="action(\'ssh_repair\')">Repair SSH</button><button class="secondary" onclick="action(\'ssh_restart\')">Restart SSH</button>'}else{h+=metric("TightVNC",r.status.installed?"Installed":"Not installed",r.status.installed?"good":"warn")+metric("Service",r.status.serviceStatus||"Unknown",r.status.ready?"good":"warn")+metric("Port 5900",r.status.listening?"Listening":"Not listening",r.status.listening?"good":"warn");h+='</div><div class="actions" style="margin-top:12px"><button onclick="action(\'vnc_install\')">Install TightVNC</button><button class="secondary" onclick="action(\'vnc_restart\')">Restart TightVNC</button><button class="danger" onclick="action(\'vnc_uninstall\')">Uninstall TightVNC</button>'}h+='<button class="secondary" onclick="loadRemote()">Refresh Status</button></div>';$("remoteAccess").innerHTML=h}catch(e){$("remoteAccess").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function action(name){if(name==="vnc_uninstall"&&!confirm("Uninstall TightVNC?"))return;try{$("actionMessage").innerHTML='<div class="notice">Working…</div>';const r=await j("/api/action",{method:"POST",body:JSON.stringify({action:name})});$("actionMessage").innerHTML='<div class="notice">'+esc(r.message||"Action completed.")+'</div>';setTimeout(()=>{loadStatus();loadRemote()},1200)}catch(e){$("actionMessage").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function loadLogs(){const b=await j("/api/logs");$("logFile").innerHTML=b.files.map(x=>'<option value="'+esc(x.name)+'">'+esc(x.name)+" — "+esc(x.size)+" bytes</option>").join("");if(b.files.length)loadLog();else $("logOutput").textContent="No log files found."}
 async function loadLog(){const name=$("logFile").value;if(!name)return;try{const b=await j("/api/log?name="+encodeURIComponent(name)+"&lines="+encodeURIComponent($("logLines").value));$("logOutput").textContent=b.content||"";$("logOutput").scrollTop=$("logOutput").scrollHeight}catch(e){$("logOutput").textContent=e.message}}
 async function loadConfig(){const b=await j("/api/config");$("config").innerHTML=Object.entries(b.values).map(([k,v])=>'<label>'+esc(k)+'<input data-key="'+esc(k)+'" value="'+esc(v)+'"></label>').join("")}
 async function saveConfig(){try{const values={};document.querySelectorAll("#config input[data-key]").forEach(x=>values[x.dataset.key]=x.value);const r=await j("/api/config",{method:"POST",body:JSON.stringify({values})});$("configMessage").innerHTML='<div class="notice">'+esc(r.message)+'</div>'}catch(e){$("configMessage").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
-async function loadAll(){await Promise.all([loadStatus(),loadConnectivity(),loadRemote(),loadLogs(),loadConfig()])}
+async function loadAll(){await Promise.all([loadStatus(),loadConnectivity(),loadAi(),loadRemote(),loadLogs(),loadConfig()])}
 loadAll();
 </script></body></html>"""
 
@@ -275,6 +279,7 @@ def _safe_config_values() -> dict[str, str]:
         "SITEWATCH_LOCAL_ADMIN_ENABLED": "true",
         "SITEWATCH_LOCAL_ADMIN_PORT": "8765",
         "SITEWATCH_LOCAL_ADMIN_LAN_ACCESS": "false",
+        "SITEWATCH_BETA_AI_DETECTION": "false",
     }
     return {key: current.get(key, os.getenv(key, default)) for key, default in defaults.items()}
 
@@ -343,6 +348,10 @@ class LocalAdminHandler(BaseHTTPRequestHandler):
                 return self._json(_status())
             if url.path == "/api/connectivity":
                 return self._json(_connectivity())
+            if url.path == "/api/ai":
+                from .beta_features import plugin_capabilities
+                plugin = plugin_capabilities().get("plugins", [{}])[0]
+                return self._json(plugin)
             if url.path == "/api/remote-access":
                 return self._json(_remote_access_status())
             if url.path == "/api/logs":
