@@ -10,6 +10,7 @@ from .snmp import run_snmp_walk
 from .remote_tunnel import remote_tunnel_loop
 from .nvr_streams import nvr_stream_loop
 from .beta_features import plugin_capabilities, resolve_ai_detection_beta
+from .ai_model_manager import ensure_managed_model
 
 SERVER = os.environ["SITEWATCH_SERVER_URL"].rstrip("/")
 TOKEN = os.environ["SITEWATCH_AGENT_TOKEN"]
@@ -76,6 +77,24 @@ def fetch_config():
     if current_request and current_request != previous_request and current_request != last_discovery_request: print(f"[discovery] manual refresh requested at {current_request}", flush=True)
     ai_enabled, ai_source = resolve_ai_detection_beta(config)
     print(f"[config] version={config.get('configVersion')} devices={len(config.get('devices', []))} ai_detection_beta={'enabled' if ai_enabled else 'disabled'} source={ai_source}", flush=True)
+
+def ai_model_provision_loop():
+    time.sleep(2)
+    last_enabled = None
+    while True:
+        try:
+            enabled, source = resolve_ai_detection_beta(config)
+            if enabled:
+                if last_enabled is not True:
+                    print(f"[ai-model] beta enabled source={source}; checking managed model", flush=True)
+                status = ensure_managed_model()
+                if status.get("present") and status.get("managed"):
+                    print(f"[ai-model] model ready id={status.get('id')} version={status.get('version')}", flush=True)
+            last_enabled = enabled
+        except Exception as e:
+            print(f"[ai-model] worker error: {e}", flush=True)
+        time.sleep(60)
+
 
 def heartbeat():
     while True:
@@ -241,7 +260,7 @@ def main():
     while True:
         try:fetch_config();break
         except Exception as e:print(f"[startup] waiting for server: {e}",flush=True);time.sleep(10)
-    start_worker("heartbeat",heartbeat);start_worker("discovery",discovery_loop);start_worker("preview",preview_loop);start_worker("retry",monitor_retry_loop);start_worker("onvif",onvif_loop);start_worker("snmp-walk",snmp_walk_loop);start_worker("nvr-streams",nvr_stream_loop);start_worker("remote-tunnel",lambda:remote_tunnel_loop(SERVER,TOKEN))
+    start_worker("heartbeat",heartbeat);start_worker("ai-model",ai_model_provision_loop);start_worker("discovery",discovery_loop);start_worker("preview",preview_loop);start_worker("retry",monitor_retry_loop);start_worker("onvif",onvif_loop);start_worker("snmp-walk",snmp_walk_loop);start_worker("nvr-streams",nvr_stream_loop);start_worker("remote-tunnel",lambda:remote_tunnel_loop(SERVER,TOKEN))
     monitor_pool=concurrent.futures.ThreadPoolExecutor(max_workers=MONITOR_WORKERS,thread_name_prefix="sitewatch-check");snapshot_pool=concurrent.futures.ThreadPoolExecutor(max_workers=SNAPSHOT_WORKERS,thread_name_prefix="sitewatch-snapshot");in_flight={};snapshot_in_flight={};last_config=time.time()
     while True:
         now=time.time()
