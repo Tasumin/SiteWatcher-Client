@@ -76,7 +76,7 @@ const $=id=>document.getElementById(id);
 const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 async function j(path,opts={}){const r=await fetch(path,{cache:"no-store",headers:{"Content-Type":"application/json",...(opts.headers||{})},...opts});const b=await r.json().catch(()=>({}));if(!r.ok)throw new Error(b.error||("HTTP "+r.status));return b}
 function metric(label,value,klass=""){return '<div class="metric"><span>'+esc(label)+'</span><b class="'+klass+'">'+esc(value)+'</b></div>'}
-async function loadStatus(){try{const s=await j("/api/status");$("platform").textContent=s.platform.system+" "+s.platform.release;$("status").innerHTML=metric("Version",s.version)+metric("Hostname",s.hostname)+metric("Agent service",s.service.status,s.service.running?"good":"bad")+metric("PID",s.pid)+metric("Process uptime",s.uptime)+metric("Server",s.serverUrl)+metric("Local UI",s.localAdminUrl)}catch(e){$("status").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
+async function loadStatus(){try{const s=await j("/api/status");$("platform").textContent=s.platform.system+" "+s.platform.release;$("status").innerHTML=metric("Installed version",s.version)+metric("Latest version",s.latestVersion||"Unknown",s.updateAvailable?"warn":"good")+metric("Update status",s.updateAvailable?"Update available":"Current",s.updateAvailable?"warn":"good")+metric("Hostname",s.hostname)+metric("Agent service",s.service.status,s.service.running?"good":"bad")+metric("PID",s.pid)+metric("Process uptime",s.uptime)+metric("Server",s.serverUrl)+metric("Local UI",s.localAdminUrl)}catch(e){$("status").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function loadConnectivity(){try{$("connectivity").innerHTML=metric("Status","Testing…");const c=await j("/api/connectivity");$("connectivity").innerHTML=metric("DNS",c.dns.ok?c.dns.addresses.join(", "):c.dns.error,c.dns.ok?"good":"bad")+metric("TCP "+c.tcp.port,c.tcp.ok?"Connected":c.tcp.error,c.tcp.ok?"good":"bad")+metric("NodeVyu API",c.api.ok?"Authenticated":c.api.error,c.api.ok?"good":"bad")}catch(e){$("connectivity").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function loadAi(){try{const p=await j("/api/ai"),cams=await j("/api/ai-cameras");const r=p.runtime||{},m=p.model||{};$("aiStatus").innerHTML=metric("Beta opt-in",p.enabled?"Enabled":"Disabled",p.enabled?"good":"warn")+metric("ONNX Runtime",r.installed?("v"+(r.version||"unknown")):"Not installed",r.ready?"good":"warn")+metric("Provider",r.preferredProvider||"None",r.ready?"good":"warn")+metric("Available providers",(r.providers||[]).join(", ")||"None")+metric("Detection model",m.present?"Ready":"Not installed",m.present?"good":"warn")+metric("Model path",m.path||"Not configured");$("aiCamera").innerHTML=(cams.cameras||[]).map(x=>'<option value="'+esc(x.id)+'">'+esc(x.name)+'</option>').join("")||'<option value="">No standalone RTSP cameras assigned</option>'}catch(e){$("aiStatus").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function runAiTest(){const cameraId=$("aiCamera").value;if(!cameraId)return;try{$("aiTest").innerHTML='<div class="notice">Capturing frame and running inference…</div>';const r=await j("/api/ai-test",{method:"POST",body:JSON.stringify({cameraId})});let h='<div class="notice"><b>'+esc(r.cameraName)+'</b> • '+esc(r.provider)+' • '+Number(r.metrics.totalMs||0).toFixed(1)+' ms total • '+Number(r.metrics.inferenceMs||0).toFixed(1)+' ms inference';if((r.detections||[]).length){h+='<div style="margin-top:8">'+r.detections.map(d=>esc(d.label)+' '+(Number(d.confidence||0)*100).toFixed(1)+'%').join('<br>')+'</div>'}else h+='<div style="margin-top:8">No matching detections.</div>';h+='</div>';$("aiTest").innerHTML=h}catch(e){$("aiTest").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
@@ -142,11 +142,44 @@ def _format_uptime(seconds: float) -> str:
     return f"{minutes}m {seconds}s"
 
 
+def _version_tuple(value: str) -> tuple[int, ...]:
+    parts = []
+    for item in str(value or "").strip().split("."):
+        digits = "".join(ch for ch in item if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+def _latest_agent_version() -> str | None:
+    server = os.getenv("SITEWATCH_SERVER_URL", "").rstrip("/")
+    token = os.getenv("SITEWATCH_AGENT_TOKEN", "")
+    if not server or not token:
+        return None
+    try:
+        response = requests.get(
+            server + "/api/agent/version",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        if not response.ok:
+            return None
+        body = response.json()
+        value = str(body.get("latestVersion") or "").strip()
+        return value or None
+    except Exception:
+        return None
+
+
 def _status() -> dict:
     bind = local_admin_bind()
     display_host = socket.gethostname() if bind == "0.0.0.0" else bind
+    latest_version = _latest_agent_version()
     return {
         "version": __version__,
+        "latestVersion": latest_version,
+        "updateAvailable": bool(latest_version and _version_tuple(latest_version) > _version_tuple(__version__)),
         "hostname": socket.gethostname(),
         "pid": os.getpid(),
         "uptime": _format_uptime(time.time() - STARTED_AT),
