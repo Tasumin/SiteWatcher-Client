@@ -30,7 +30,6 @@ SAFE_CONFIG_KEYS = {
     "SITEWATCH_MONITOR_WORKERS",
     "SITEWATCH_SNAPSHOT_WORKERS",
     "SITEWATCH_LOCAL_ADMIN_ENABLED",
-    "SITEWATCH_LOCAL_ADMIN_BIND",
     "SITEWATCH_LOCAL_ADMIN_PORT",
     "SITEWATCH_LOCAL_ADMIN_LAN_ACCESS",
 }
@@ -94,9 +93,7 @@ def local_admin_enabled() -> bool:
 
 
 def local_admin_bind() -> str:
-    if _truthy(os.getenv("SITEWATCH_LOCAL_ADMIN_LAN_ACCESS", "false")):
-        return os.getenv("SITEWATCH_LOCAL_ADMIN_BIND", "0.0.0.0").strip() or "0.0.0.0"
-    return "127.0.0.1"
+    return "0.0.0.0" if _truthy(os.getenv("SITEWATCH_LOCAL_ADMIN_LAN_ACCESS", "false")) else "127.0.0.1"
 
 
 def local_admin_port() -> int:
@@ -276,7 +273,6 @@ def _safe_config_values() -> dict[str, str]:
         "SITEWATCH_MONITOR_WORKERS": "8",
         "SITEWATCH_SNAPSHOT_WORKERS": "2",
         "SITEWATCH_LOCAL_ADMIN_ENABLED": "true",
-        "SITEWATCH_LOCAL_ADMIN_BIND": "127.0.0.1",
         "SITEWATCH_LOCAL_ADMIN_PORT": "8765",
         "SITEWATCH_LOCAL_ADMIN_LAN_ACCESS": "false",
     }
@@ -290,10 +286,6 @@ def _write_safe_config(values: dict) -> None:
         port = int(port_text)
         if port < 1024 or port > 65535:
             raise ValueError("Local admin port must be between 1024 and 65535.")
-    bind = requested.get("SITEWATCH_LOCAL_ADMIN_BIND")
-    if bind and bind not in {"127.0.0.1", "0.0.0.0"}:
-        raise ValueError("Local admin bind must be 127.0.0.1 or 0.0.0.0.")
-
     existing_lines = ENV_FILE.read_text(encoding="utf-8-sig", errors="replace").splitlines() if ENV_FILE.exists() else []
     output: list[str] = []
     seen: set[str] = set()
