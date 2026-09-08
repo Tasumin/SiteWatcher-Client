@@ -60,7 +60,7 @@ label{display:block;font-size:12px;color:var(--muted);font-weight:700}input,sele
 <body><div class="wrap">
 <header><div class="brand"><h1>NodeVyu Agent</h1><p>Local troubleshooting and recovery interface</p></div><span id="platform" class="pill">loading</span></header>
 
-<section class="card"><h2>Agent Status</h2><div id="status" class="grid"></div><div class="actions" style="margin-top:12px"><button onclick="loadAll()">Refresh</button><button class="secondary" onclick="action('restart_agent')">Restart Agent</button><button class="secondary" onclick="action('update_agent')">Update Agent</button></div><div id="actionMessage"></div></section>
+<section class="card"><h2>Agent Status</h2><div id="status" class="grid"></div><div id="releaseNotes"></div><div class="actions" style="margin-top:12px"><button onclick="loadAll()">Refresh</button><button class="secondary" onclick="action('restart_agent')">Restart Agent</button><button class="secondary" onclick="action('update_agent')">Update Agent</button></div><div id="actionMessage"></div></section>
 
 <section class="card"><h2>Connectivity</h2><div id="connectivity" class="grid"></div><div class="actions" style="margin-top:12px"><button class="secondary" onclick="loadConnectivity()">Run Connectivity Test</button></div></section>
 
@@ -88,7 +88,7 @@ const $=id=>document.getElementById(id);
 const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 async function j(path,opts={}){const r=await fetch(path,{cache:"no-store",headers:{"Content-Type":"application/json",...(opts.headers||{})},...opts});const b=await r.json().catch(()=>({}));if(!r.ok)throw new Error(b.error||("HTTP "+r.status));return b}
 function metric(label,value,klass=""){return '<div class="metric"><span>'+esc(label)+'</span><b class="'+klass+'">'+esc(value)+'</b></div>'}
-async function loadStatus(){try{const s=await j("/api/status");$("platform").textContent=s.platform.system+" "+s.platform.release;$("status").innerHTML=metric("Installed version",s.version)+metric("Latest version",s.latestVersion||"Unknown",s.updateAvailable?"warn":"good")+metric("Update status",s.updateAvailable?"Update available":"Current",s.updateAvailable?"warn":"good")+metric("Hostname",s.hostname)+metric("Agent service",s.service.status,s.service.running?"good":"bad")+metric("PID",s.pid)+metric("Process uptime",s.uptime)+metric("Server",s.serverUrl)+metric("Local UI",s.localAdminUrl)}catch(e){$("status").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
+async function loadStatus(){try{const s=await j("/api/status");$("platform").textContent=s.platform.system+" "+s.platform.release;$("status").innerHTML=metric("Installed version",s.version)+metric("Latest version",s.latestVersion||"Unknown",s.updateAvailable?"warn":"good")+metric("Update status",s.updateAvailable?"Update available":"Current",s.updateAvailable?"warn":"good")+metric("Hostname",s.hostname)+metric("Agent service",s.service.status,s.service.running?"good":"bad")+metric("PID",s.pid)+metric("Process uptime",s.uptime)+metric("Server",s.serverUrl)+metric("Local UI",s.localAdminUrl);const r=s.release||null;if(s.updateAvailable&&r){let h='<div class="notice" style="margin-top:12px"><b>What\'s new in v'+esc(r.version||s.latestVersion)+'</b>';if(r.title)h+=' — '+esc(r.title);if(r.summary)h+='<div style="margin-top:6px">'+esc(r.summary)+'</div>';if(Array.isArray(r.changes)&&r.changes.length)h+='<ul style="margin:8px 0 0;padding-left:20px">'+r.changes.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>';if(r.recommended)h+='<div style="margin-top:8px"><span class="pill good">Recommended update</span></div>';h+='</div>';$("releaseNotes").innerHTML=h}else $("releaseNotes").innerHTML=""}catch(e){$("status").innerHTML='<div class="notice">'+esc(e.message)+'</div>'; $("releaseNotes").innerHTML=""}}
 async function loadConnectivity(){try{$("connectivity").innerHTML=metric("Status","Testing…");const c=await j("/api/connectivity");$("connectivity").innerHTML=metric("DNS",c.dns.ok?c.dns.addresses.join(", "):c.dns.error,c.dns.ok?"good":"bad")+metric("TCP "+c.tcp.port,c.tcp.ok?"Connected":c.tcp.error,c.tcp.ok?"good":"bad")+metric("NodeVyu API",c.api.ok?"Authenticated":c.api.error,c.api.ok?"good":"bad")}catch(e){$("connectivity").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 async function loadAi(){try{const p=await j("/api/ai"),cams=await j("/api/ai-cameras");const r=p.runtime||{},m=p.model||{},w=p.wildlifeModel||{};$("aiStatus").innerHTML=metric("Beta opt-in",p.enabled?"Enabled":"Disabled",p.enabled?"good":"warn")+metric("ONNX Runtime",r.installed?("v"+(r.version||"unknown")):"Not installed",r.ready?"good":"warn")+metric("Provider",r.preferredProvider||"None",r.ready?"good":"warn")+metric("Available providers",(r.providers||[]).join(", ")||"None")+metric("General model",m.present?"Ready":"Not installed",m.present?"good":"warn")+metric("Wildlife model",w.present?"Ready":"Not installed",w.present?"good":"warn")+metric("Wildlife version",w.version||"Pending");$("aiCamera").innerHTML=(cams.cameras||[]).map(x=>'<option value="'+esc(x.id)+'">'+esc(x.name)+'</option>').join("")||'<option value="">No standalone RTSP cameras assigned</option>'}catch(e){$("aiStatus").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
 function renderAiResult(r){let title=r.cameraName||r.sourceName||"AI test";let h='<div class="notice"><b>'+esc(title)+'</b> • '+esc(r.provider||"unknown provider")+' • '+Number(r.metrics?.totalMs||0).toFixed(1)+' ms total • '+Number(r.metrics?.inferenceMs||0).toFixed(1)+' ms inference';if((r.detections||[]).length){h+='<div style="margin-top:8">'+r.detections.map(d=>esc(d.label)+' '+(Number(d.confidence||0)*100).toFixed(1)+'%').join('<br>')+'</div>'}else h+='<div style="margin-top:8">No matching detections.</div>';if(r.previewUrl)h+='<div style="margin-top:12px"><b>Detection preview</b><br><img src="'+esc(r.previewUrl)+'" style="margin-top:8px;max-width:100%;border-radius:10px;border:1px solid var(--line)"></div>';if(r.clipUrl)h+='<div style="margin-top:12px"><b>Evidence clip</b><br><video controls preload="metadata" src="'+esc(r.clipUrl)+'" style="margin-top:8px;max-width:100%;width:720px;border-radius:10px;border:1px solid var(--line)"></video></div>';h+='</div>';$("aiTest").innerHTML=h}
@@ -173,11 +173,11 @@ def _version_tuple(value: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
-def _latest_agent_version() -> str | None:
+def _latest_agent_release() -> dict:
     server = os.getenv("SITEWATCH_SERVER_URL", "").rstrip("/")
     token = os.getenv("SITEWATCH_AGENT_TOKEN", "")
     if not server or not token:
-        return None
+        return {}
     try:
         response = requests.get(
             server + "/api/agent/version",
@@ -185,21 +185,22 @@ def _latest_agent_version() -> str | None:
             timeout=10,
         )
         if not response.ok:
-            return None
+            return {}
         body = response.json()
-        value = str(body.get("latestVersion") or "").strip()
-        return value or None
+        return body if isinstance(body, dict) else {}
     except Exception:
-        return None
+        return {}
 
 
 def _status() -> dict:
     bind = local_admin_bind()
     display_host = socket.gethostname() if bind == "0.0.0.0" else bind
-    latest_version = _latest_agent_version()
+    release_status = _latest_agent_release()
+    latest_version = str(release_status.get("latestVersion") or "").strip() or None
     return {
         "version": __version__,
         "latestVersion": latest_version,
+        "release": release_status.get("release"),
         "updateAvailable": bool(latest_version and _version_tuple(latest_version) > _version_tuple(__version__)),
         "hostname": socket.gethostname(),
         "pid": os.getpid(),
