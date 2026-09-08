@@ -467,12 +467,12 @@ def _analyze_ai_image(image, source_name: str) -> dict:
     preview_name, _ = _save_ai_evidence(_annotated_preview(image, detections), None)
     return {
         "sourceName": source_name,
-        "provider": result["provider"],
-        "wildlifeProvider": result.get("wildlifeProvider"),
+        "provider": detector.provider,
+        "wildlifeProvider": wildlife_provider,
         "sourceWidth": image.width,
         "sourceHeight": image.height,
-        "metrics": result["metrics"],
-        "detections": result["detections"],
+        "metrics": metrics,
+        "detections": [item.as_dict() for item in detections],
         "previewUrl": f"/api/ai-evidence?name={urllib.parse.quote(preview_name)}",
         "clipUrl": None,
     }
@@ -481,14 +481,6 @@ def _analyze_ai_image(image, source_name: str) -> dict:
 def _run_ai_test(camera_id: str) -> dict:
     import io
     from PIL import Image
-    from .ai_detector import (
-        DEFAULT_DETECTION_CLASSES,
-        WILDLIFE_SOURCE_LABELS,
-        Detection,
-        OnnxObjectDetector,
-        canonical_wildlife_label,
-    )
-    from .ai_model_manager import ensure_wildlife_model, wildlife_labels_path, wildlife_model_path
     from .beta_features import resolve_ai_detection_beta
     from .checks import capture_snapshot, capture_clip
 
