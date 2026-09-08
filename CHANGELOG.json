@@ -4,13 +4,14 @@
       "version": "1.2.9",
       "date": "2026-09-08",
       "title": "Visible agent release notes",
-      "summary": "Adds user-facing agent release notes so administrators can review what changes before updating.",
+      "summary": "Adds user-facing release notes and improves live AI throughput by disabling the slower wildlife model during live RTSP testing.",
       "recommended": true,
       "changes": [
         "Adds a structured changelog for each agent version.",
         "Shows the latest release notes in the local Agent Admin UI when an update is available.",
         "Makes release notes available to the NodeVyu server for the web update interface.",
-        "Adds a test that requires the current agent version to have a changelog entry."
+        "Adds a test that requires the current agent version to have a changelog entry.",
+        "Disables wildlife inference during live RTSP AI testing so the general detector can run at a higher effective FPS."
       ]
     },
     {
