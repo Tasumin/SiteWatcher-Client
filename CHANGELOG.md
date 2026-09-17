@@ -1,5 +1,12 @@
 # NodeVyu Agent Changelog
 
+## 1.2.12
+
+- Raises the production live-stream safety ceiling from 8 to 16 concurrent streams.
+- The NodeVyu server/admin per-agent setting now controls the effective live-stream limit up to 16.
+- Production startup no longer lets an older local `SITEWATCH_MAX_LIVE_STREAMS=8` value block an admin-configured limit above 8.
+- Updated the example configuration to document the 16-stream ceiling.
+
 ## 1.2.11
 
 - Stops polling `/api/agent/snmp-walk` when the agent has no SNMP monitoring checks configured.
