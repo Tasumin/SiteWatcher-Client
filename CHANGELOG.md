@@ -1,5 +1,11 @@
 # NodeVyu Agent Changelog
 
+## 1.2.13
+
+- Frames live fragmented-MP4 output on complete media fragment boundaries instead of arbitrary FFmpeg stdout chunks.
+- Allows multiple Video Wall viewers to reuse one upstream camera stream while late-joining browsers start on a valid fragment/keyframe boundary.
+- Normalizes the H.264/AAC MIME codec declaration for stricter Safari/iOS playback handling.
+
 ## 1.2.12
 
 - Raises the production live-stream safety ceiling from 8 to 16 concurrent streams.
@@ -24,5 +30,5 @@
 - Raised the default concurrent live-stream capacity from 2 to 8 when no local override is configured.
 - Enables Video Wall layouts to open more than two cameras from the same NodeVyu Agent.
 - Existing explicit `SITEWATCH_MAX_LIVE_STREAMS` values remain authoritative so appliance-specific limits can still be enforced.
-- Updated the example agent configuration to document the new eight-stream default.
+- Updated the example configuration to document the new eight-stream default.
 
