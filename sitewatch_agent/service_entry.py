@@ -114,10 +114,9 @@ def load_env(root: Path) -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("SITEWATCH_DB", str(data_dir / "queue.db"))
     os.environ.setdefault("SITEWATCH_LOCK_FILE", str(data_dir / "sitewatch-agent.lock"))
-    # Video walls may open several cameras from the same site at once. Keep an
-    # explicit local override authoritative, but raise the production default
-    # above the old two-stream Live View limit.
-    os.environ.setdefault("SITEWATCH_MAX_LIVE_STREAMS", "8")
+    # The server/admin setting is the per-agent live-stream control. Keep the
+    # production agent ceiling high enough for the largest supported wall.
+    os.environ["SITEWATCH_MAX_LIVE_STREAMS"] = "16"
 
     ffmpeg_dir = root / "bin"
     ffmpeg_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
