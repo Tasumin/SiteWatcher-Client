@@ -13,7 +13,7 @@ import websocket
 from .checks import CREATE_FLAGS, _rtsp_with_credentials, _tool
 from .viewing_window import enter_viewing_window, leave_viewing_window
 
-MAX_STREAMS = max(1, int(os.getenv("SITEWATCH_MAX_LIVE_STREAMS", "2")))
+MAX_STREAMS = max(1, int(os.getenv("SITEWATCH_MAX_LIVE_STREAMS", "8")))
 MAX_TRANSCODES = max(0, int(os.getenv("SITEWATCH_MAX_LIVE_TRANSCODES", "1")))
 MAX_TRANSCODE_BITRATE_KBPS = max(256, int(os.getenv("SITEWATCH_LIVE_MAX_BITRATE_KBPS", "2500")))
 MAX_TRANSCODE_WIDTH = max(320, int(os.getenv("SITEWATCH_LIVE_MAX_WIDTH", "1280")))
