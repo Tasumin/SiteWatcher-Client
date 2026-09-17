@@ -171,6 +171,29 @@ def _stderr_reader(proc, tail, stop_event):
         pass
 
 
+def _flush_complete_fragments(uplink, fragment_buffer: bytearray):
+    while True:
+        first_marker = fragment_buffer.find(b"moof")
+        if first_marker < 4:
+            if len(fragment_buffer) > 8 * 1024 * 1024:
+                raise RuntimeError("Unable to locate fragmented MP4 media boundary")
+            return
+        first_start = first_marker - 4
+        if first_start > 0:
+            del fragment_buffer[:first_start]
+            first_marker = 4
+        next_marker = fragment_buffer.find(b"moof", first_marker + 4)
+        if next_marker < 4:
+            if len(fragment_buffer) > 16 * 1024 * 1024:
+                raise RuntimeError("Fragmented MP4 media fragment exceeded relay limit")
+            return
+        next_start = next_marker - 4
+        fragment = bytes(fragment_buffer[:next_start])
+        del fragment_buffer[:next_start]
+        if fragment:
+            uplink.send(b"\x01" + fragment, opcode=websocket.ABNF.OPCODE_BINARY)
+
+
 def _stream_worker(server_url: str, token: str, job: dict, node_id: str, control_ws):
     session_id = str(job.get("sessionId") or "")
     source_type = str(job.get("sourceType") or "")
@@ -225,7 +248,7 @@ def _stream_worker(server_url: str, token: str, job: dict, node_id: str, control
             if session_id in _workers:
                 _workers[session_id]["proc"] = proc
         threading.Thread(target=_stderr_reader, args=(proc, stderr_tail, stop_event), daemon=True).start()
-        mime_type = 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"' if has_audio else "video/mp4; codecs=avc1.42E01E"
+        mime_type = 'video/mp4; codecs="avc1.42E01E,mp4a.40.2"' if has_audio else "video/mp4; codecs=avc1.42E01E"
         _send_json(uplink, {
             "type": "stream-ready",
             "sessionId": session_id,
@@ -244,6 +267,7 @@ def _stream_worker(server_url: str, token: str, job: dict, node_id: str, control
         print(f"[live] session={session_id[:8]} source={source_type}:{source_id} codec={codec} mode={mode}{audio_log}", flush=True)
 
         init_buffer = bytearray()
+        fragment_buffer = bytearray()
         init_sent = False
         bytes_sent = 0
         last_stats = time.monotonic()
@@ -265,13 +289,15 @@ def _stream_worker(server_url: str, token: str, job: dict, node_id: str, control
                     if init:
                         uplink.send(b"\x00" + init, opcode=websocket.ABNF.OPCODE_BINARY)
                     if media:
-                        uplink.send(b"\x01" + media, opcode=websocket.ABNF.OPCODE_BINARY)
+                        fragment_buffer.extend(media)
+                        _flush_complete_fragments(uplink, fragment_buffer)
                     init_buffer.clear()
                     init_sent = True
                 elif len(init_buffer) > 2 * 1024 * 1024:
                     raise RuntimeError("FFmpeg produced an invalid fragmented MP4 initialization segment")
             else:
-                uplink.send(b"\x01" + chunk, opcode=websocket.ABNF.OPCODE_BINARY)
+                fragment_buffer.extend(chunk)
+                _flush_complete_fragments(uplink, fragment_buffer)
 
             now = time.monotonic()
             if now - last_stats >= 5:
