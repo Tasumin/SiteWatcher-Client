@@ -90,18 +90,9 @@ def ai_model_provision_loop():
                     print(f"[ai-model] beta enabled source={source}; checking managed model", flush=True)
                 status = ensure_managed_model()
                 wildlife_status = ensure_wildlife_model()
-                ready = bool(
-                    status.get("present")
-                    and status.get("managed")
-                    and status.get("verified") is not False
-                    and wildlife_status.get("present")
-                    and wildlife_status.get("verified") is not False
-                )
+                ready = bool(status.get("present") and status.get("managed") and status.get("verified") is not False and wildlife_status.get("present") and wildlife_status.get("verified") is not False)
                 if ready and last_ready is not True:
-                    print(
-                        f"[ai-model] models ready general={status.get('version')} wildlife={wildlife_status.get('version')}",
-                        flush=True,
-                    )
+                    print(f"[ai-model] models ready general={status.get('version')} wildlife={wildlife_status.get('version')}", flush=True)
                 last_ready = ready
             else:
                 last_ready = None
@@ -110,19 +101,12 @@ def ai_model_provision_loop():
             print(f"[ai-model] worker error: {e}", flush=True)
         time.sleep(60)
 
-
 def heartbeat():
     while True:
         try:
             capabilities = plugin_capabilities(config)
-            capabilities["platform"] = {
-                "os": "windows" if os.name == "nt" else "linux",
-                "system": platform.system(),
-                "release": platform.release(),
-                "machine": platform.machine(),
-            }
-            heartbeat_payload = {"version": __version__, "capabilities": capabilities}
-            r = api("POST", "/api/agent/heartbeat", json=heartbeat_payload)
+            capabilities["platform"] = {"os": "windows" if os.name == "nt" else "linux", "system": platform.system(), "release": platform.release(), "machine": platform.machine()}
+            r = api("POST", "/api/agent/heartbeat", json={"version": __version__, "capabilities": capabilities})
             if r.ok: fetch_config()
             else: print(f"[heartbeat] HTTP {r.status_code}", flush=True)
         except Exception as e: print(f"[heartbeat] {e}", flush=True)
@@ -233,9 +217,27 @@ def onvif_loop():
         except Exception as e:print(f"[onvif] worker error: {e}",flush=True)
         time.sleep(2)
 
+def snmp_monitoring_enabled():
+    for device in config.get("devices", []):
+        for check in device.get("checks", []):
+            if str(check.get("type") or "").lower() == "snmp":
+                return True
+    return False
+
 def snmp_walk_loop():
     time.sleep(4)
+    last_enabled = None
     while True:
+        enabled = snmp_monitoring_enabled()
+        if not enabled:
+            if last_enabled is not False:
+                print("[snmp] no SNMP monitoring configured; worker idle", flush=True)
+            last_enabled = False
+            time.sleep(10)
+            continue
+        if last_enabled is not True:
+            print("[snmp] SNMP monitoring configured; polling enabled", flush=True)
+        last_enabled = True
         try:
             r=api("GET","/api/agent/snmp-walk")
             if not r.ok:
@@ -248,16 +250,7 @@ def snmp_walk_loop():
                 print("[snmp] malformed walk request",flush=True);time.sleep(2);continue
             root_oid=str(walk.get("root_oid") or "1.3.6.1.2.1")
             print(f"[snmp] {host}: walking {root_oid}",flush=True)
-            outcome=run_snmp_walk(
-                host=str(host),
-                community=str(community),
-                root_oid=root_oid,
-                port=int(walk.get("port") or 161),
-                version=str(walk.get("snmp_version") or "2c"),
-                timeout_seconds=float(walk.get("timeout_seconds") or 3),
-                retries=int(walk.get("retries") or 1),
-                max_rows=int(walk.get("max_rows") or 500),
-            )
+            outcome=run_snmp_walk(host=str(host),community=str(community),root_oid=root_oid,port=int(walk.get("port") or 161),version=str(walk.get("snmp_version") or "2c"),timeout_seconds=float(walk.get("timeout_seconds") or 3),retries=int(walk.get("retries") or 1),max_rows=int(walk.get("max_rows") or 500))
             payload={"walkId":wid,"status":outcome.get("status"),"message":outcome.get("message"),"rows":outcome.get("rows") or [],"completedAt":datetime.now(timezone.utc).isoformat(),"version":__version__}
             api("POST","/api/agent/snmp-walk",json=payload).raise_for_status()
             print(f"[snmp] {host}: {outcome.get('status')} - {outcome.get('message')}",flush=True)
