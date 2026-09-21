@@ -1,5 +1,10 @@
 # NodeVyu Agent Changelog
 
+## 1.2.15
+
+- Fixes a malformed literal `\\n` in `sitewatch_agent/__init__.py` that caused Python startup to fail after updating to 1.2.14 on Linux.
+- Restores a valid agent version module so the systemd service can import and start normally.
+
 ## 1.2.14
 
 - Adds best-effort MAC address discovery for LAN devices using the Windows ARP table or Linux neighbor/ARP tables.
