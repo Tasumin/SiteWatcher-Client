@@ -1,5 +1,11 @@
 # NodeVyu Agent Changelog
 
+## 1.2.14
+
+- Adds best-effort MAC address discovery for LAN devices using the Windows ARP table or Linux neighbor/ARP tables.
+- Reports normalized MAC addresses with network discovery results so DHCP-managed devices can be reconciled by stable hardware identity.
+- Adds tests for MAC normalization and cross-platform neighbor parsing.
+
 ## 1.2.13
 
 - Frames live fragmented-MP4 output on complete media fragment boundaries instead of arbitrary FFmpeg stdout chunks.
@@ -31,4 +37,3 @@
 - Enables Video Wall layouts to open more than two cameras from the same NodeVyu Agent.
 - Existing explicit `SITEWATCH_MAX_LIVE_STREAMS` values remain authoritative so appliance-specific limits can still be enforced.
 - Updated the example configuration to document the new eight-stream default.
-
