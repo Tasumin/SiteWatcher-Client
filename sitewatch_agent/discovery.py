@@ -3,12 +3,52 @@ import ipaddress
 import os
 import re
 import socket
+import subprocess
 import time
 
 from .snmp import probe_snmp
 
 DISCOVERY_PORTS = (80, 443, 554, 8000, 9000)
 MAX_ADDRESSES_PER_CIDR = 1024
+MAC_PATTERN = re.compile(r"(?i)\b([0-9a-f]{2}(?:[:-][0-9a-f]{2}){5})\b")
+
+
+def normalize_mac(value):
+    text = str(value or "").strip()
+    match = MAC_PATTERN.search(text)
+    if not match:
+        return None
+    parts = re.split(r"[:-]", match.group(1))
+    return ":".join(part.upper() for part in parts)
+
+
+def _run_neighbor_command(command):
+    try:
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        ).stdout or ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def neighbor_mac(host):
+    host = str(host)
+    if os.name == "nt":
+        commands = (["arp", "-a", host],)
+    else:
+        commands = (
+            ["ip", "neigh", "show", host],
+            ["arp", "-n", host],
+        )
+    for command in commands:
+        mac = normalize_mac(_run_neighbor_command(command))
+        if mac:
+            return mac
+    return None
 
 
 def local_ipv4():
@@ -82,7 +122,12 @@ def scan_host(host):
         hostname = socket.gethostbyaddr(host)[0]
     except Exception:
         hostname = None
-    result = {"host": host, "hostname": hostname, "openPorts": sorted(set(ports))}
+    result = {
+        "host": host,
+        "hostname": hostname,
+        "openPorts": sorted(set(ports)),
+        "macAddress": neighbor_mac(host),
+    }
     if snmp.get("detected"):
         result["snmp"] = {
             "detected": True,
@@ -108,6 +153,8 @@ def scan_network():
                         existing["openPorts"] = sorted(set(existing["openPorts"]) | set(result["openPorts"]))
                         if not existing.get("hostname") and result.get("hostname"):
                             existing["hostname"] = result["hostname"]
+                        if not existing.get("macAddress") and result.get("macAddress"):
+                            existing["macAddress"] = result["macAddress"]
                         if result.get("snmp"):
                             existing["snmp"] = result["snmp"]
                     else:
