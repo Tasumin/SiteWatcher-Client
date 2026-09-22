@@ -1,5 +1,13 @@
 # NodeVyu Agent Changelog
 
+## 1.2.16
+
+- Makes Video Wall streams video-only when requested by the NodeVyu server, avoiding unnecessary AAC tracks and improving Safari/iOS fragmented-MP4 compatibility.
+- Advertises the probed H.264 profile and level in the MP4 MIME codec string instead of always claiming Baseline Level 3.0.
+- Uses Baseline Level 3.1 for H.265-to-H.264 live transcodes to provide a predictable mobile-compatible H.264 output profile.
+- Direct single-camera live sessions can continue to include audio.
+
+
 ## 1.2.15
 
 - Fixes a malformed literal `\\n` in `sitewatch_agent/__init__.py` that caused Python startup to fail after updating to 1.2.14 on Linux.
