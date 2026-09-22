@@ -52,7 +52,7 @@ def _probe(target: str, timeout: int, session_id: str):
     cmd = [
         _tool("ffprobe"), "-v", "error", "-rtsp_transport", "tcp",
         "-timeout", str(timeout * 1_000_000),
-        "-show_entries", "stream=codec_type,codec_name,width,height,bit_rate,avg_frame_rate",
+        "-show_entries", "stream=codec_type,codec_name,profile,level,width,height,bit_rate,avg_frame_rate",
         "-of", "json", target,
     ]
     proc = None
@@ -108,6 +108,30 @@ def _reserve_mode(session_id: str, codec: str) -> str:
         return "transcode"
 
 
+def _h264_codec_string(video_info: dict, mode: str) -> str:
+    if mode == "transcode":
+        return "avc1.42E01F"
+    profile = str(video_info.get("profile") or "").strip().lower()
+    profile_prefix = "42E0"
+    if "main" in profile:
+        profile_prefix = "4D40"
+    elif "high 10" in profile:
+        profile_prefix = "6E00"
+    elif "high 4:2:2" in profile:
+        profile_prefix = "7A00"
+    elif "high 4:4:4" in profile:
+        profile_prefix = "F400"
+    elif "high" in profile:
+        profile_prefix = "6400"
+    level = video_info.get("level")
+    try:
+        level_value = max(0, min(255, int(level)))
+        level_hex = f"{level_value:02X}"
+    except Exception:
+        level_hex = "1E"
+    return f"avc1.{profile_prefix}{level_hex}"
+
+
 def _ffmpeg_command(target: str, mode: str, timeout: int, has_audio: bool):
     common = [
         _tool("ffmpeg"), "-hide_banner", "-loglevel", "warning",
@@ -129,6 +153,7 @@ def _ffmpeg_command(target: str, mode: str, timeout: int, has_audio: bool):
         ]
     return common + [
         "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+        "-profile:v", "baseline", "-level:v", "3.1",
         "-threads", str(TRANSCODE_THREADS), "-pix_fmt", "yuv420p",
         "-vf", f"scale='min({MAX_TRANSCODE_WIDTH},iw)':-2:force_original_aspect_ratio=decrease",
         "-maxrate", f"{MAX_TRANSCODE_BITRATE_KBPS}k", "-bufsize", f"{MAX_TRANSCODE_BITRATE_KBPS * 2}k",
@@ -220,7 +245,8 @@ def _stream_worker(server_url: str, token: str, job: dict, node_id: str, control
         probe = _probe(target, timeout, session_id)
         info = probe["video"]
         audio_info = probe.get("audio")
-        has_audio = bool(audio_info and audio_info.get("codec_name"))
+        include_audio = job.get("includeAudio") is not False
+        has_audio = bool(include_audio and audio_info and audio_info.get("codec_name"))
         codec = str(info.get("codec_name") or "").lower()
         mode = _reserve_mode(session_id, codec)
         command = _ffmpeg_command(target, mode, timeout, has_audio)
@@ -248,7 +274,8 @@ def _stream_worker(server_url: str, token: str, job: dict, node_id: str, control
             if session_id in _workers:
                 _workers[session_id]["proc"] = proc
         threading.Thread(target=_stderr_reader, args=(proc, stderr_tail, stop_event), daemon=True).start()
-        mime_type = 'video/mp4; codecs="avc1.42E01E,mp4a.40.2"' if has_audio else "video/mp4; codecs=avc1.42E01E"
+        video_codec = _h264_codec_string(info, mode)
+        mime_type = f'video/mp4; codecs="{video_codec},mp4a.40.2"' if has_audio else f'video/mp4; codecs="{video_codec}"'
         _send_json(uplink, {
             "type": "stream-ready",
             "sessionId": session_id,
@@ -256,6 +283,7 @@ def _stream_worker(server_url: str, token: str, job: dict, node_id: str, control
             "mode": mode,
             "sourceCodec": codec,
             "outputCodec": "h264",
+            "videoCodec": video_codec,
             "audioCodec": "aac" if has_audio else None,
             "sourceAudioCodec": str(audio_info.get("codec_name") or "").lower() if has_audio else None,
             "hasAudio": has_audio,
