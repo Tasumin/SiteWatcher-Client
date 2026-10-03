@@ -1,5 +1,11 @@
 # NodeVyu Agent Changelog
 
+## 1.2.18
+
+- Fixes a live-stream startup failure introduced in 1.2.17 where the requested stream quality was referenced before being initialized.
+- Restores High/Low Video Wall stream startup while retaining the improved high-resolution transcode profile from 1.2.17.
+
+
 ## 1.2.17
 
 - Improves high-resolution Video Wall quality for H.265 main streams that must be transcoded to H.264 for browser playback.
