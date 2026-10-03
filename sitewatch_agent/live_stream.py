@@ -17,6 +17,10 @@ MAX_STREAMS = max(1, int(os.getenv("SITEWATCH_MAX_LIVE_STREAMS", "8")))
 MAX_TRANSCODES = max(0, int(os.getenv("SITEWATCH_MAX_LIVE_TRANSCODES", "1")))
 MAX_TRANSCODE_BITRATE_KBPS = max(256, int(os.getenv("SITEWATCH_LIVE_MAX_BITRATE_KBPS", "2500")))
 MAX_TRANSCODE_WIDTH = max(320, int(os.getenv("SITEWATCH_LIVE_MAX_WIDTH", "1280")))
+HIGH_TRANSCODE_BITRATE_KBPS = max(MAX_TRANSCODE_BITRATE_KBPS, int(os.getenv("SITEWATCH_LIVE_HIGH_MAX_BITRATE_KBPS", "6500")))
+HIGH_TRANSCODE_WIDTH = max(MAX_TRANSCODE_WIDTH, int(os.getenv("SITEWATCH_LIVE_HIGH_MAX_WIDTH", "1920")))
+LOW_TRANSCODE_CRF = max(16, min(32, int(os.getenv("SITEWATCH_LIVE_CRF", "23"))))
+HIGH_TRANSCODE_CRF = max(16, min(30, int(os.getenv("SITEWATCH_LIVE_HIGH_CRF", "20"))))
 TRANSCODE_THREADS = max(1, min(16, int(os.getenv("SITEWATCH_LIVE_TRANSCODE_THREADS", "2"))))
 STARTUP_TIMEOUT = max(5, int(os.getenv("SITEWATCH_LIVE_STARTUP_TIMEOUT_SECONDS", "15")))
 AUDIO_BITRATE_KBPS = max(32, min(256, int(os.getenv("SITEWATCH_LIVE_AUDIO_BITRATE_KBPS", "96"))))
@@ -108,9 +112,9 @@ def _reserve_mode(session_id: str, codec: str) -> str:
         return "transcode"
 
 
-def _h264_codec_string(video_info: dict, mode: str) -> str:
+def _h264_codec_string(video_info: dict, mode: str, quality: str = "auto") -> str:
     if mode == "transcode":
-        return "avc1.42E01F"
+        return "avc1.42E028" if quality == "high" else "avc1.42E01F"
     profile = str(video_info.get("profile") or "").strip().lower()
     profile_prefix = "42E0"
     if "main" in profile:
@@ -132,7 +136,7 @@ def _h264_codec_string(video_info: dict, mode: str) -> str:
     return f"avc1.{profile_prefix}{level_hex}"
 
 
-def _ffmpeg_command(target: str, mode: str, timeout: int, has_audio: bool):
+def _ffmpeg_command(target: str, mode: str, timeout: int, has_audio: bool, quality: str = "auto"):
     common = [
         _tool("ffmpeg"), "-hide_banner", "-loglevel", "warning",
         "-rtsp_transport", "tcp", "-timeout", str(timeout * 1_000_000),
@@ -151,12 +155,20 @@ def _ffmpeg_command(target: str, mode: str, timeout: int, has_audio: bool):
             "-movflags", "+frag_keyframe+empty_moov+default_base_moof+omit_tfhd_offset",
             "-f", "mp4", "pipe:1",
         ]
+    high_quality = quality == "high"
+    width = HIGH_TRANSCODE_WIDTH if high_quality else MAX_TRANSCODE_WIDTH
+    bitrate = HIGH_TRANSCODE_BITRATE_KBPS if high_quality else MAX_TRANSCODE_BITRATE_KBPS
+    crf = HIGH_TRANSCODE_CRF if high_quality else LOW_TRANSCODE_CRF
+    preset = "veryfast" if high_quality else "ultrafast"
+    level = "4.0" if high_quality else "3.1"
+    buffer_multiplier = 3 if high_quality else 2
     return common + [
-        "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-        "-profile:v", "baseline", "-level:v", "3.1",
+        "-c:v", "libx264", "-preset", preset, "-tune", "zerolatency",
+        "-profile:v", "baseline", "-level:v", level,
         "-threads", str(TRANSCODE_THREADS), "-pix_fmt", "yuv420p",
-        "-vf", f"scale='min({MAX_TRANSCODE_WIDTH},iw)':-2:force_original_aspect_ratio=decrease",
-        "-maxrate", f"{MAX_TRANSCODE_BITRATE_KBPS}k", "-bufsize", f"{MAX_TRANSCODE_BITRATE_KBPS * 2}k",
+        "-vf", f"scale='min({width},iw)':-2:force_original_aspect_ratio=decrease",
+        "-crf", str(crf),
+        "-maxrate", f"{bitrate}k", "-bufsize", f"{bitrate * buffer_multiplier}k",
         "-g", "30", "-keyint_min", "30", "-sc_threshold", "0",
         "-movflags", "+frag_keyframe+empty_moov+default_base_moof+omit_tfhd_offset",
         "-f", "mp4", "pipe:1",
@@ -249,7 +261,7 @@ def _stream_worker(server_url: str, token: str, job: dict, node_id: str, control
         has_audio = bool(include_audio and audio_info and audio_info.get("codec_name"))
         codec = str(info.get("codec_name") or "").lower()
         mode = _reserve_mode(session_id, codec)
-        command = _ffmpeg_command(target, mode, timeout, has_audio)
+        command = _ffmpeg_command(target, mode, timeout, has_audio, quality)
 
         uplink_url = (
             f"{_ws_base(server_url)}/stream/uplink"
@@ -274,7 +286,7 @@ def _stream_worker(server_url: str, token: str, job: dict, node_id: str, control
             if session_id in _workers:
                 _workers[session_id]["proc"] = proc
         threading.Thread(target=_stderr_reader, args=(proc, stderr_tail, stop_event), daemon=True).start()
-        video_codec = _h264_codec_string(info, mode)
+        video_codec = _h264_codec_string(info, mode, quality)
         mime_type = f'video/mp4; codecs="{video_codec},mp4a.40.2"' if has_audio else f'video/mp4; codecs="{video_codec}"'
         _send_json(uplink, {
             "type": "stream-ready",
@@ -292,7 +304,8 @@ def _stream_worker(server_url: str, token: str, job: dict, node_id: str, control
             "bitrateKbps": int(info.get("bit_rate") or 0) // 1000 if str(info.get("bit_rate") or "").isdigit() else None,
         })
         audio_log = f" audio={str(audio_info.get('codec_name') or '').lower()}->aac" if has_audio else " audio=none"
-        print(f"[live] session={session_id[:8]} source={source_type}:{source_id} codec={codec} mode={mode}{audio_log}", flush=True)
+        transcode_log = "" if mode == "copy" else f" quality={quality} maxWidth={HIGH_TRANSCODE_WIDTH if quality == 'high' else MAX_TRANSCODE_WIDTH} maxBitrateKbps={HIGH_TRANSCODE_BITRATE_KBPS if quality == 'high' else MAX_TRANSCODE_BITRATE_KBPS} crf={HIGH_TRANSCODE_CRF if quality == 'high' else LOW_TRANSCODE_CRF}"
+        print(f"[live] session={session_id[:8]} source={source_type}:{source_id} codec={codec} mode={mode}{transcode_log}{audio_log}", flush=True)
 
         init_buffer = bytearray()
         fragment_buffer = bytearray()
