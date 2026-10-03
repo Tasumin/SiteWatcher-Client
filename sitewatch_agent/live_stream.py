@@ -239,6 +239,9 @@ def _stream_worker(server_url: str, token: str, job: dict, node_id: str, control
     username = job.get("username")
     password = job.get("password")
     timeout = max(3, int(job.get("timeoutSeconds") or STARTUP_TIMEOUT))
+    quality = str(job.get("quality") or "auto").lower()
+    if quality not in {"auto", "low", "high"}:
+        quality = "auto"
     stop_event = None
     proc = None
     uplink = None
