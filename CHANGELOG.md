@@ -1,5 +1,14 @@
 # NodeVyu Agent Changelog
 
+## 1.2.17
+
+- Improves high-resolution Video Wall quality for H.265 main streams that must be transcoded to H.264 for browser playback.
+- Gives High streams a dedicated 1920px / 6.5 Mbps constrained-quality transcode profile instead of sharing the 1280px / 2.5 Mbps low-stream profile.
+- Uses CRF 20, a larger VBV buffer, and the x264 veryfast preset for High streams to reduce periodic blockiness and quality pumping.
+- Keeps Low/Auto transcodes on the lighter profile for appliance efficiency.
+- Reports the active high/low transcode profile in the agent live-stream log.
+
+
 ## 1.2.16
 
 - Makes Video Wall streams video-only when requested by the NodeVyu server, avoiding unnecessary AAC tracks and improving Safari/iOS fragmented-MP4 compatibility.
