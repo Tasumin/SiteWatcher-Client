@@ -105,7 +105,7 @@ def _stop_process(proc):
 
 def rtsp(url: str, username: str | None, password: str | None, timeout: int, *, probe_context: str = "scheduled", viewing_source=None, use_probe_limit: bool = True):
     target = _rtsp_with_credentials(url, username, password); start = time.monotonic()
-    cmd = [_tool("ffprobe"), "-v", "error", "-rtsp_transport", "tcp", "-timeout", str(timeout * 1_000_000), "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height", "-of", "json", target]
+    cmd = [_tool("ffprobe"), "-v", "error", "-rtsp_transport", "tcp", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height", "-of", "json", target]
     acquired = False; proc = None
     try:
         if use_probe_limit:
@@ -235,7 +235,7 @@ def capture_snapshot(device: dict):
     if not rtsp_check: return None
     host = device["host"]; timeout = int(device.get("timeoutSeconds", 8)); url = rtsp_check.get("url") or f"rtsp://{host}:554/"; target = _rtsp_with_credentials(url, rtsp_check.get("username"), rtsp_check.get("password")); errors = []
     for attempt in range(1, 3):
-        cmd = [_tool("ffmpeg"), "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp", "-timeout", str(timeout * 1_000_000), "-fflags", "+genpts+discardcorrupt", "-flags", "low_delay", "-i", target, "-vf", "fps=2,select='gte(n\\,3)',scale=1280:-2:force_original_aspect_ratio=decrease", "-frames:v", "1", "-q:v", "4", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"]
+        cmd = [_tool("ffmpeg"), "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp", "-fflags", "+genpts+discardcorrupt", "-flags", "low_delay", "-i", target, "-vf", "fps=2,select='gte(n\\,3)',scale=1280:-2:force_original_aspect_ratio=decrease", "-frames:v", "1", "-q:v", "4", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"]
         try: p = subprocess.run(cmd, capture_output=True, timeout=max(timeout + 8, 15), creationflags=CREATE_FLAGS)
         except Exception as e: errors.append(f"attempt {attempt}: {e}"); time.sleep(1); continue
         stderr = p.stderr.decode("utf-8", errors="ignore").strip()
@@ -264,7 +264,6 @@ def capture_clip(device: dict, duration_seconds: int = 4):
     cmd = [
         _tool("ffmpeg"), "-hide_banner", "-loglevel", "error",
         "-rtsp_transport", "tcp",
-        "-timeout", str(timeout * 1_000_000),
         "-i", target,
         "-t", str(duration),
         "-an",
