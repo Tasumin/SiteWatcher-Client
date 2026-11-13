@@ -16,8 +16,9 @@ def _private_host(host):
         address = ipaddress.ip_address(host)
     except ValueError as exc:
         raise ValueError("NVR must have a private IP address") from exc
-    if not address.is_private or address.is_loopback or address.is_link_local or address.is_multicast:
-        raise ValueError("NVR address must be a private LAN address")
+    lan_ranges = (ipaddress.ip_network("10.0.0.0/8"), ipaddress.ip_network("172.16.0.0/12"), ipaddress.ip_network("192.168.0.0/16"))
+    if address.version != 4 or not any(address in network for network in lan_ranges):
+        raise ValueError("NVR address must be an RFC1918 LAN address")
     return str(address)
 
 
