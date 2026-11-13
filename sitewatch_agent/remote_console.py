@@ -20,6 +20,7 @@ HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json
 UPDATE_COMMAND = "__SITEWATCH_UPDATE_AGENT__"
 RESTART_AGENT_COMMAND = "__SITEWATCH_RESTART_AGENT__"
 REKEY_COMMAND = "__SITEWATCH_REKEY__"
+NVR_PREFIX = "__NODEVYU_NVR__|"
 SCAN_PREFIX = "__SITEWATCH_IP_SCAN__|"
 LOG_PREFIX = "__SITEWATCH_GET_LOGS__|"
 LOG_FILE_PREFIX = "__SITEWATCH_GET_LOG_FILE__|"
@@ -208,6 +209,18 @@ def remote_console_loop():
             item=response.json().get("command")
             if not item:time.sleep(2);continue
             command_id=str(item.get("id") or "");command=str(item.get("command") or "");shell=str(item.get("shell") or "powershell").lower()
+            if command.startswith(NVR_PREFIX) and shell=="system":
+                try:
+                    from .nvr_diagnostics import run_nvr_action
+                    parts = command[len(NVR_PREFIX):].split("|")
+                    if len(parts) != 2:
+                        raise ValueError("Invalid NVR command")
+                    device_id, action = parts
+                    result = run_nvr_action(SERVER, HEADERS, device_id, action)
+                    _post_result(command_id, {"stdout":json.dumps(result),"stderr":"","exitCode":0})
+                except Exception as e:
+                    _post_result(command_id, {"stdout":"","stderr":f"NVR operation failed ({type(e).__name__}): " + (str(e) if isinstance(e, ValueError) or isinstance(e, RuntimeError) else "network or device error"),"exitCode":1})
+                continue
             if command==UPDATE_COMMAND and shell=="system":
                 try:_launch_self_update();_post_result(command_id,{"stdout":"SiteWatcher agent update launched as SYSTEM. See logs/update.log for detailed progress.","stderr":"","exitCode":0})
                 except Exception as e:_post_result(command_id,{"stdout":"","stderr":f"Unable to start SiteWatcher update: {e}","exitCode":1})
