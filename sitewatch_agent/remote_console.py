@@ -219,7 +219,7 @@ def remote_console_loop():
                     result = run_nvr_action(SERVER, HEADERS, device_id, action)
                     _post_result(command_id, {"stdout":json.dumps(result),"stderr":"","exitCode":0})
                 except Exception as e:
-                    _post_result(command_id, {"stdout":"","stderr":str(e),"exitCode":1})
+                    _post_result(command_id, {"stdout":"","stderr":f"NVR operation failed ({type(e).__name__}): " + (str(e) if isinstance(e, ValueError) or isinstance(e, RuntimeError) else "network or device error"),"exitCode":1})
                 continue
             if command==UPDATE_COMMAND and shell=="system":
                 try:_launch_self_update();_post_result(command_id,{"stdout":"SiteWatcher agent update launched as SYSTEM. See logs/update.log for detailed progress.","stderr":"","exitCode":0})
