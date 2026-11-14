@@ -1,5 +1,9 @@
 # NodeVyu Agent Changelog
 
+## 1.2.20
+
+- Adds site-agent execution of NodeVyu NVR troubleshooting jobs, including fixed Reolink HTTPS CGI actions and TCP/RTSP checks.
+
 ## 1.2.18
 
 - Fixes a live-stream startup failure introduced in 1.2.17 where the requested stream quality was referenced before being initialized.

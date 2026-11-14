@@ -9,6 +9,7 @@ from .onvif import probe_onvif
 from .snmp import run_snmp_walk
 from .remote_tunnel import remote_tunnel_loop
 from .nvr_streams import nvr_stream_loop
+from .nvr_actions import nvr_action_loop
 from .beta_features import plugin_capabilities, resolve_ai_detection_beta
 from .ai_model_manager import ensure_managed_model, ensure_wildlife_model
 
@@ -105,6 +106,7 @@ def heartbeat():
     while True:
         try:
             capabilities = plugin_capabilities(config)
+            capabilities["nvrActions"] = True
             capabilities["platform"] = {"os": "windows" if os.name == "nt" else "linux", "system": platform.system(), "release": platform.release(), "machine": platform.machine()}
             r = api("POST", "/api/agent/heartbeat", json={"version": __version__, "capabilities": capabilities})
             if r.ok: fetch_config()
@@ -268,6 +270,7 @@ def main():
     while True:
         try:fetch_config();break
         except Exception as e:print(f"[startup] waiting for server: {e}",flush=True);time.sleep(10)
+    start_worker("nvr-actions", lambda: nvr_action_loop(api))
     start_worker("heartbeat",heartbeat);start_worker("ai-model",ai_model_provision_loop);start_worker("discovery",discovery_loop);start_worker("preview",preview_loop);start_worker("retry",monitor_retry_loop);start_worker("onvif",onvif_loop);start_worker("snmp-walk",snmp_walk_loop);start_worker("nvr-streams",nvr_stream_loop);start_worker("remote-tunnel",lambda:remote_tunnel_loop(SERVER,TOKEN))
     monitor_pool=concurrent.futures.ThreadPoolExecutor(max_workers=MONITOR_WORKERS,thread_name_prefix="sitewatch-check");snapshot_pool=concurrent.futures.ThreadPoolExecutor(max_workers=SNAPSHOT_WORKERS,thread_name_prefix="sitewatch-snapshot");in_flight={};snapshot_in_flight={};last_config=time.time()
     while True:
